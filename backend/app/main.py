@@ -1,5 +1,8 @@
+import json
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from dataclasses import asdict
+from typing import Literal
 
 import httpx
 from fastapi import FastAPI, HTTPException, Request
@@ -9,7 +12,10 @@ from pydantic import BaseModel, ConfigDict, Field
 from . import catalog
 from .config import Settings, load_settings
 from .decisions import Decision, DecisionLog
+from .guard.rules import GuardContext, OrderFacts, assess
 from .paypal import PayPalClient, PayPalError
+
+TAMPERED_PRICE_MULTIPLIER = 10
 
 
 class CartLine(BaseModel):
@@ -24,13 +30,19 @@ class CreateOrderRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     items: list[CartLine] = Field(min_length=1)
+    demo_attack: Literal["tampered_total"] | None = None
 
 
 class OrderRef(BaseModel):
     order_id: str
 
 
-def build_order(lines: list[CartLine]) -> tuple[dict, int]:
+def build_order(lines: list[CartLine], price_multiplier: int = 1) -> tuple[dict, int]:
+    """Returns the PayPal order body and the honest cart total.
+
+    A multiplier above 1 stands in for a compromised merchant script: the order sent to
+    PayPal is inflated, while the returned total stays what the buyer saw in the cart.
+    """
     total_cents = 0
     items = []
     for line in lines:
@@ -44,11 +56,11 @@ def build_order(lines: list[CartLine]) -> tuple[dict, int]:
                 "quantity": str(line.quantity),
                 "unit_amount": {
                     "currency_code": catalog.CURRENCY,
-                    "value": catalog.to_value(product.price_cents),
+                    "value": catalog.to_value(product.price_cents * price_multiplier),
                 },
             }
         )
-    value = catalog.to_value(total_cents)
+    value = catalog.to_value(total_cents * price_multiplier)
     body = {
         "intent": "CAPTURE",
         "purchase_units": [
@@ -116,7 +128,11 @@ def create_app(
     @app.get("/config")
     async def config() -> dict:
         # The client ID is the only credential the browser ever sees.
-        return {"paypal_client_id": settings.paypal_client_id, "currency": catalog.CURRENCY}
+        return {
+            "paypal_client_id": settings.paypal_client_id,
+            "currency": catalog.CURRENCY,
+            "demo_attacks_enabled": settings.demo_attacks_enabled,
+        }
 
     @app.get("/products")
     async def products() -> list[dict]:
@@ -127,7 +143,10 @@ def create_app(
 
     @app.post("/orders")
     async def create_order(request: CreateOrderRequest) -> dict:
-        body, total_cents = build_order(request.items)
+        if request.demo_attack and not settings.demo_attacks_enabled:
+            raise HTTPException(403, "Demo attacks are disabled")
+        multiplier = TAMPERED_PRICE_MULTIPLIER if request.demo_attack else 1
+        body, total_cents = build_order(request.items, multiplier)
         order = await app.state.paypal.create_order(body)
         app.state.log.record_created(order["id"], total_cents, catalog.CURRENCY)
         return {"order_id": order["id"]}
@@ -140,16 +159,34 @@ def create_app(
 
     @app.post("/guard/check")
     async def guard_check(ref: OrderRef) -> dict:
-        require_decision(ref.order_id)
+        decision = require_decision(ref.order_id)
         order = await app.state.paypal.get_order(ref.order_id)
         if order["status"] != "APPROVED":
             raise HTTPException(409, f"Order is {order['status']}, not APPROVED")
         summary = summarize(order)
+        risk = assess(
+            OrderFacts.from_paypal(order),
+            GuardContext(
+                cart_total_cents=decision.cart_total_cents,
+                store_currency=decision.currency,
+                allowed_merchant_ids=settings.allowed_merchant_ids,
+            ),
+        )
+        risk_body = {
+            "level": risk.level,
+            "score": risk.score,
+            "hits": [asdict(hit) for hit in risk.hits],
+        }
         if not app.state.log.mark_checked(
-            ref.order_id, catalog.to_cents(summary["total"]), summary["payee"]
+            ref.order_id,
+            catalog.to_cents(summary["total"]),
+            summary["payee"],
+            risk.level,
+            risk.score,
+            json.dumps(risk_body["hits"]),
         ):
             raise HTTPException(409, "Order is already decided")
-        return summary
+        return {**summary, "risk": risk_body}
 
     @app.post("/guard/confirm")
     async def guard_confirm(ref: OrderRef) -> dict:

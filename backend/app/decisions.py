@@ -20,9 +20,15 @@ CREATE TABLE IF NOT EXISTS decisions (
     checked_payee TEXT,
     capture_id TEXT,
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    risk_level TEXT,
+    risk_score INTEGER,
+    rule_hits TEXT
 )
 """
+
+# Columns added after the first release, for logs that already exist.
+ADDED_COLUMNS = {"risk_level": "TEXT", "risk_score": "INTEGER", "rule_hits": "TEXT"}
 
 
 @dataclass(frozen=True)
@@ -41,6 +47,10 @@ class DecisionLog:
         self._path = path
         with closing(self._connect()) as db, db:
             db.execute(SCHEMA)
+            existing = {row[1] for row in db.execute("PRAGMA table_info(decisions)")}
+            for name, sql_type in ADDED_COLUMNS.items():
+                if name not in existing:
+                    db.execute(f"ALTER TABLE decisions ADD COLUMN {name} {sql_type}")
 
     def _connect(self) -> sqlite3.Connection:
         return sqlite3.connect(self._path)
@@ -73,13 +83,24 @@ class DecisionLog:
             ).fetchone()
         return Decision(*row) if row else None
 
-    def mark_checked(self, order_id: str, total_cents: int, payee: str) -> bool:
+    def mark_checked(
+        self,
+        order_id: str,
+        total_cents: int,
+        payee: str,
+        risk_level: str,
+        risk_score: int,
+        rule_hits: str,
+    ) -> bool:
         return self._update(
             order_id,
             ("created", "checked"),
             status="checked",
             checked_total_cents=total_cents,
             checked_payee=payee,
+            risk_level=risk_level,
+            risk_score=risk_score,
+            rule_hits=rule_hits,
         )
 
     def claim_for_capture(self, order_id: str) -> bool:

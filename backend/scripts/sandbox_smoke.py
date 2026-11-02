@@ -22,7 +22,7 @@ async def main() -> None:
     unit = order["purchase_units"][0]
     print(f"OK: order {order['id']} is {order['status']}")
     print(f"amount: {unit['amount']['value']} {unit['amount']['currency_code']}")
-    print(f"payee fields returned: {sorted(unit.get('payee', {}))}")
+    print(f"payee merchant ID: {unit.get('payee', {}).get('merchant_id')}")
 
 
 if __name__ == "__main__":

@@ -1,3 +1,5 @@
+import sqlite3
+
 import httpx
 import pytest
 from fastapi.testclient import TestClient
@@ -5,7 +7,7 @@ from fastapi.testclient import TestClient
 from app.config import Settings
 from app.main import create_app
 
-from .fake_paypal import FakePayPal
+from .fake_paypal import PAYEE, FakePayPal
 
 EARBUDS = {"items": [{"product_id": "earbuds", "quantity": 1}]}
 
@@ -15,11 +17,20 @@ def paypal():
     return FakePayPal()
 
 
+def make_client(paypal, tmp_path, **settings_overrides) -> TestClient:
+    settings = Settings(
+        "id",
+        "secret",
+        database_path=str(tmp_path / "test.db"),
+        allowed_merchant_ids=frozenset({PAYEE["merchant_id"]}),
+        **settings_overrides,
+    )
+    return TestClient(create_app(settings, httpx.MockTransport(paypal.handler)))
+
+
 @pytest.fixture
 def client(paypal, tmp_path):
-    settings = Settings("id", "secret", database_path=str(tmp_path / "test.db"))
-    app = create_app(settings, httpx.MockTransport(paypal.handler))
-    with TestClient(app) as test_client:
+    with make_client(paypal, tmp_path) as test_client:
         yield test_client
 
 
@@ -153,6 +164,66 @@ def test_lost_capture_reply_blocks_cancel_and_retry_charges_once(client, paypal)
     assert client.post("/guard/cancel", json={"order_id": order_id}).status_code == 409
     assert client.post("/guard/confirm", json={"order_id": order_id}).status_code == 200
     assert paypal.captures == [order_id]
+
+
+def test_clean_order_checks_low(client, paypal):
+    order_id = create_order(client)
+    paypal.approve(order_id)
+    risk = client.post("/guard/check", json={"order_id": order_id}).json()["risk"]
+    assert risk == {"level": "Low", "score": 0, "hits": []}
+
+
+def test_order_edited_at_paypal_checks_high_against_the_stored_cart(client, paypal):
+    order_id = create_order(client)
+    paypal.orders[order_id]["purchase_units"][0]["amount"]["value"] = "499.90"
+    paypal.approve(order_id)
+    risk = client.post("/guard/check", json={"order_id": order_id}).json()["risk"]
+    assert risk["level"] == "High"
+    assert risk["hits"][0]["reason"] == "The total changed from 49.99 to 499.90."
+
+
+def test_risk_is_written_to_the_decision_log(client, paypal):
+    order_id = checked_order(client, paypal)
+    decision = client.app.state.log.get(order_id)
+    with sqlite3.connect(client.app.state.log._path) as db:
+        row = db.execute(
+            "SELECT risk_level, risk_score, rule_hits FROM decisions WHERE order_id = ?",
+            (order_id,),
+        ).fetchone()
+    assert decision.status == "checked"
+    assert row == ("Low", 0, "[]")
+
+
+def test_log_from_before_risk_columns_is_upgraded(paypal, tmp_path):
+    with sqlite3.connect(tmp_path / "test.db") as db:
+        db.execute(
+            "CREATE TABLE decisions (order_id TEXT PRIMARY KEY, status TEXT NOT NULL, "
+            "cart_total_cents INTEGER NOT NULL, currency TEXT NOT NULL, "
+            "checked_total_cents INTEGER, checked_payee TEXT, capture_id TEXT, "
+            "created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, "
+            "updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)"
+        )
+    with make_client(paypal, tmp_path) as upgraded:
+        checked_order(upgraded, paypal)
+
+
+def test_demo_attack_is_refused_unless_enabled(client, paypal):
+    response = client.post("/orders", json={**EARBUDS, "demo_attack": "tampered_total"})
+    assert response.status_code == 403
+    assert paypal.orders == {}
+
+
+def test_demo_attack_is_caught_and_cancel_captures_nothing(paypal, tmp_path):
+    with make_client(paypal, tmp_path, demo_attacks_enabled=True) as client:
+        body = {**EARBUDS, "demo_attack": "tampered_total"}
+        order_id = client.post("/orders", json=body).json()["order_id"]
+        assert paypal.orders[order_id]["purchase_units"][0]["amount"]["value"] == "499.90"
+        paypal.approve(order_id)
+        risk = client.post("/guard/check", json={"order_id": order_id}).json()["risk"]
+        assert risk["level"] == "High"
+        assert {"price_mismatch", "currency_trick"} <= {hit["code"] for hit in risk["hits"]}
+        assert client.post("/guard/cancel", json={"order_id": order_id}).status_code == 200
+    assert paypal.captures == []
 
 
 def test_unknown_order_is_404_on_every_guard_route(client):

@@ -22,7 +22,14 @@ function GuardPanel(props: {
   const { summary, onConfirm, onCancel } = props;
   return (
     <section aria-label="Review payment">
-      <h2>Review payment</h2>
+      <h2>Review payment: {summary.risk.level} risk</h2>
+      {summary.risk.hits.length > 0 && (
+        <ul aria-label="Why this was flagged">
+          {summary.risk.hits.map((hit) => (
+            <li key={hit.code}>{hit.reason}</li>
+          ))}
+        </ul>
+      )}
       <p>Paying: {summary.payee}</p>
       <p>
         Total: {summary.total} {summary.currency}
@@ -45,6 +52,7 @@ export function App() {
   const [quantities, setQuantities] = useState<Record<string, number>>({});
   const [summary, setSummary] = useState<OrderSummary>();
   const [status, setStatus] = useState("");
+  const [tampered, setTampered] = useState(false);
 
   useEffect(() => {
     Promise.all([getConfig(), getProducts()])
@@ -106,6 +114,17 @@ export function App() {
         ))}
       </ul>
 
+      {config?.demo_attacks_enabled && (
+        <label>
+          <input
+            type="checkbox"
+            checked={tampered}
+            onChange={(event) => setTampered(event.target.checked)}
+          />{" "}
+          Demo attack: tamper with the total
+        </label>
+      )}
+
       {summary && <GuardPanel summary={summary} onConfirm={confirm} onCancel={cancel} />}
 
       {config && cart.length > 0 && !summary && (
@@ -114,8 +133,8 @@ export function App() {
         >
           <PayPalButtons
             // Rebuild the buttons when the cart changes so createOrder sends the current cart.
-            forceReRender={[cart]}
-            createOrder={async () => (await createOrder(cart)).order_id}
+            forceReRender={[cart, tampered]}
+            createOrder={async () => (await createOrder(cart, tampered)).order_id}
             // No capture here: approval only opens the guard.
             onApprove={async ({ orderID }) => {
               setSummary(await guardCheck(orderID));

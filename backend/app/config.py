@@ -13,6 +13,8 @@ class Settings:
     paypal_client_secret: str
     paypal_base_url: str = "https://api-m.sandbox.paypal.com"
     database_path: str = "payguard.db"
+    allowed_merchant_ids: frozenset[str] = frozenset()
+    demo_attacks_enabled: bool = False
 
 
 def load_settings() -> Settings:
@@ -26,4 +28,10 @@ def load_settings() -> Settings:
         paypal_client_secret=secret,
         paypal_base_url=os.environ.get("PAYPAL_BASE_URL") or Settings.paypal_base_url,
         database_path=os.environ.get("DATABASE_PATH") or Settings.database_path,
+        allowed_merchant_ids=frozenset(
+            merchant.strip()
+            for merchant in os.environ.get("ALLOWED_MERCHANT_IDS", "").split(",")
+            if merchant.strip()
+        ),
+        demo_attacks_enabled=os.environ.get("DEMO_ATTACKS_ENABLED", "").lower() == "true",
     )
