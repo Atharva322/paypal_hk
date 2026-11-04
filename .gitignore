@@ -14,3 +14,5 @@ dist/
 
 # Local sandbox account notes
 paypal sandbox*.txt
+test-results/
+playwright-report/

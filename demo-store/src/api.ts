@@ -15,19 +15,6 @@ export interface CartLine {
   quantity: number;
 }
 
-export interface OrderSummary {
-  order_id: string;
-  payee: string;
-  total: string;
-  currency: string;
-  items: { name: string; quantity: number; unit_price: string }[];
-  risk: {
-    level: "Low" | "Medium" | "High";
-    score: number;
-    hits: { code: string; weight: number; reason: string }[];
-  };
-}
-
 async function request<T>(path: string, body?: unknown): Promise<T> {
   const response = await fetch(`/api${path}`, {
     method: body === undefined ? "GET" : "POST",
@@ -46,9 +33,3 @@ export const createOrder = (items: CartLine[], tampered: boolean) =>
     items,
     demo_attack: tampered ? "tampered_total" : null,
   });
-export const guardCheck = (order_id: string) =>
-  request<OrderSummary>("/guard/check", { order_id });
-export const guardConfirm = (order_id: string) =>
-  request<{ status: string; capture_id: string }>("/guard/confirm", { order_id });
-export const guardCancel = (order_id: string) =>
-  request<{ status: string }>("/guard/cancel", { order_id });

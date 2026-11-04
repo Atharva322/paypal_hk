@@ -15,6 +15,7 @@ class Settings:
     database_path: str = "payguard.db"
     allowed_merchant_ids: frozenset[str] = frozenset()
     demo_attacks_enabled: bool = False
+    high_risk_pause_seconds: int = 10
 
 
 def load_settings() -> Settings:

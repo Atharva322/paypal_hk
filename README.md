@@ -2,7 +2,7 @@
 
 A drop-in layer that makes PayPal Checkout safe to use by ear. After the buyer approves and before capture, it reads the real order aloud, runs a scam check, and waits for a deliberate confirmation.
 
-Status: guard checkpoint and rules engine built (phases 0 to 3). See the [architecture and build plan](docs/pay-guard-architecture-and-build-plan.pdf).
+Status: guard checkpoint, rules engine and accessible dialog built (phases 0 to 4). See the [architecture and build plan](docs/pay-guard-architecture-and-build-plan.pdf).
 
 ## Run locally
 
@@ -35,4 +35,10 @@ Needs Python 3.12+, Node 22+ and a [PayPal developer](https://developer.paypal.c
 ```sh
 cd backend
 .venv/Scripts/python -m pytest
+
+cd ../guard-ui
+npm install
+npx playwright test   # real-browser dialog and axe-core checks; uses Edge by default
 ```
+
+Set `PW_CHANNEL=chrome` or `PW_CHANNEL=chromium` to run the browser tests elsewhere.

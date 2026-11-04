@@ -1,7 +1,9 @@
 import json
+import time
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import asdict
+from decimal import Decimal, InvalidOperation
 from typing import Literal
 
 import httpx
@@ -13,6 +15,7 @@ from . import catalog
 from .config import Settings, load_settings
 from .decisions import Decision, DecisionLog
 from .guard.rules import GuardContext, OrderFacts, assess
+from .guard.summary import confirmation_for, spoken_lines
 from .paypal import PayPalClient, PayPalError
 
 TAMPERED_PRICE_MULTIPLIER = 10
@@ -35,6 +38,30 @@ class CreateOrderRequest(BaseModel):
 
 class OrderRef(BaseModel):
     order_id: str
+
+
+class ConfirmRequest(OrderRef):
+    acknowledged_risk: bool = False
+    typed_total: str | None = None
+
+
+def typed_total_matches(typed: str | None, total_cents: int) -> bool:
+    cleaned = (typed or "").strip().lstrip("$").replace(",", "")
+    try:
+        return catalog.to_cents(cleaned) == total_cents
+    except (InvalidOperation, ValueError, OverflowError):  # "nan" and "inf" parse as Decimals
+        return False
+
+
+def require_confirmation(decision: Decision, request: ConfirmRequest, pause_seconds: int) -> None:
+    """The dialog scales its steps to risk; enforced here so a script cannot skip them."""
+    if decision.risk_level == "Medium" and not request.acknowledged_risk:
+        raise HTTPException(403, "This payment needs a second confirmation")
+    if decision.risk_level == "High":
+        if time.time() - decision.checked_at < pause_seconds:
+            raise HTTPException(403, "The pause has not finished")
+        if not typed_total_matches(request.typed_total, decision.checked_total_cents):
+            raise HTTPException(403, "The typed total does not match")
 
 
 def build_order(lines: list[CartLine], price_multiplier: int = 1) -> tuple[dict, int]:
@@ -184,17 +211,26 @@ def create_app(
             risk.level,
             risk.score,
             json.dumps(risk_body["hits"]),
+            time.time(),
         ):
             raise HTTPException(409, "Order is already decided")
-        return {**summary, "risk": risk_body}
+        confirmation = confirmation_for(risk.level, settings.high_risk_pause_seconds)
+        return {
+            **summary,
+            "risk": risk_body,
+            "confirmation": confirmation,
+            "spoken": spoken_lines(summary, risk, confirmation),
+        }
 
     @app.post("/guard/confirm")
-    async def guard_confirm(ref: OrderRef) -> dict:
+    async def guard_confirm(ref: ConfirmRequest) -> dict:
         """The only route that moves money."""
         decision = require_decision(ref.order_id)
         if decision.status == "captured":
             # A double press gets the first result, not a second charge.
             return {"status": "captured", "capture_id": decision.capture_id}
+        if decision.status == "checked":
+            require_confirmation(decision, ref, settings.high_risk_pause_seconds)
         if not app.state.log.claim_for_capture(ref.order_id):
             raise HTTPException(409, f"Order cannot be confirmed from {decision.status}")
 

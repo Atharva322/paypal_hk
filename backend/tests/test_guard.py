@@ -226,6 +226,74 @@ def test_demo_attack_is_caught_and_cancel_captures_nothing(paypal, tmp_path):
     assert paypal.captures == []
 
 
+def flagged_order(client, paypal, value: str = "60.00", extras: bool = False) -> str:
+    """An approved, checked order: tampered total for High, added shipping for Medium."""
+    order_id = create_order(client)
+    amount = paypal.orders[order_id]["purchase_units"][0]["amount"]
+    if extras:
+        amount["breakdown"]["shipping"] = {"currency_code": "USD", "value": "5.00"}
+        amount["value"] = "49.99"
+    else:
+        amount["value"] = value
+    paypal.approve(order_id)
+    assert client.post("/guard/check", json={"order_id": order_id}).status_code == 200
+    return order_id
+
+
+def test_medium_risk_needs_acknowledgement(client, paypal):
+    order_id = flagged_order(client, paypal, extras=True)
+    assert client.post("/guard/confirm", json={"order_id": order_id}).status_code == 403
+    assert paypal.captures == []
+    body = {"order_id": order_id, "acknowledged_risk": True}
+    assert client.post("/guard/confirm", json=body).status_code == 200
+
+
+def test_high_risk_refuses_a_plain_confirm(paypal, tmp_path):
+    with make_client(paypal, tmp_path, high_risk_pause_seconds=0) as client:
+        order_id = flagged_order(client, paypal)
+        body = {"order_id": order_id, "acknowledged_risk": True}
+        assert client.post("/guard/confirm", json=body).status_code == 403
+    assert paypal.captures == []
+
+
+@pytest.mark.parametrize("typed", ["49.99", "60", "sixty", "", "nan", "inf"])
+def test_high_risk_refuses_a_wrong_total(paypal, tmp_path, typed):
+    with make_client(paypal, tmp_path, high_risk_pause_seconds=0) as client:
+        order_id = flagged_order(client, paypal)
+        body = {"order_id": order_id, "typed_total": typed if typed != "60" else "60.01"}
+        assert client.post("/guard/confirm", json=body).status_code == 403
+    assert paypal.captures == []
+
+
+@pytest.mark.parametrize("typed", ["60.00", "60", "$60.00", " 60.00 "])
+def test_high_risk_accepts_the_real_total_after_the_pause(paypal, tmp_path, typed):
+    with make_client(paypal, tmp_path, high_risk_pause_seconds=0) as client:
+        order_id = flagged_order(client, paypal)
+        body = {"order_id": order_id, "typed_total": typed}
+        assert client.post("/guard/confirm", json=body).status_code == 200
+    assert paypal.captures == [order_id]
+
+
+def test_high_risk_refuses_inside_the_pause(paypal, tmp_path):
+    with make_client(paypal, tmp_path, high_risk_pause_seconds=10) as client:
+        order_id = flagged_order(client, paypal)
+        body = {"order_id": order_id, "typed_total": "60.00"}
+        response = client.post("/guard/confirm", json=body)
+    assert response.status_code == 403
+    assert response.json()["detail"] == "The pause has not finished"
+    assert paypal.captures == []
+
+
+def test_check_tells_the_dialog_how_to_confirm(paypal, tmp_path):
+    with make_client(paypal, tmp_path) as client:
+        order_id = create_order(client)
+        paypal.orders[order_id]["purchase_units"][0]["amount"]["value"] = "60.00"
+        paypal.approve(order_id)
+        result = client.post("/guard/check", json={"order_id": order_id}).json()
+    assert result["confirmation"] == {"method": "type_total", "pause_seconds": 10}
+    assert result["spoken"][0] == "Warning: high risk. The total changed from 49.99 to 60.00."
+
+
 def test_unknown_order_is_404_on_every_guard_route(client):
     for route in ("/guard/check", "/guard/confirm", "/guard/cancel"):
         assert client.post(route, json={"order_id": "NOPE"}).status_code == 404

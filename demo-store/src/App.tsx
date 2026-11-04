@@ -1,58 +1,15 @@
 import { PayPalButtons, PayPalScriptProvider } from "@paypal/react-paypal-js";
-import { useEffect, useMemo, useState } from "react";
-import {
-  type CartLine,
-  type Config,
-  createOrder,
-  getConfig,
-  getProducts,
-  guardCancel,
-  guardCheck,
-  guardConfirm,
-  type OrderSummary,
-  type Product,
-} from "./api";
-
-// Placeholder for phase 4, which replaces it with the accessible guard dialog.
-function GuardPanel(props: {
-  summary: OrderSummary;
-  onConfirm: () => void;
-  onCancel: () => void;
-}) {
-  const { summary, onConfirm, onCancel } = props;
-  return (
-    <section aria-label="Review payment">
-      <h2>Review payment: {summary.risk.level} risk</h2>
-      {summary.risk.hits.length > 0 && (
-        <ul aria-label="Why this was flagged">
-          {summary.risk.hits.map((hit) => (
-            <li key={hit.code}>{hit.reason}</li>
-          ))}
-        </ul>
-      )}
-      <p>Paying: {summary.payee}</p>
-      <p>
-        Total: {summary.total} {summary.currency}
-      </p>
-      <ul>
-        {summary.items.map((item) => (
-          <li key={item.name}>
-            {item.quantity} × {item.name}, {item.unit_price} each
-          </li>
-        ))}
-      </ul>
-      <button onClick={onConfirm}>Confirm payment</button> <button onClick={onCancel}>Cancel</button>
-    </section>
-  );
-}
+import { attach, type GuardOutcome } from "pay-guard-ui";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { type CartLine, type Config, createOrder, getConfig, getProducts, type Product } from "./api";
 
 export function App() {
   const [config, setConfig] = useState<Config>();
   const [products, setProducts] = useState<Product[]>([]);
   const [quantities, setQuantities] = useState<Record<string, number>>({});
-  const [summary, setSummary] = useState<OrderSummary>();
   const [status, setStatus] = useState("");
   const [tampered, setTampered] = useState(false);
+  const statusRef = useRef<HTMLParagraphElement>(null);
 
   useEffect(() => {
     Promise.all([getConfig(), getProducts()])
@@ -74,33 +31,31 @@ export function App() {
   const add = (id: string) =>
     setQuantities((current) => ({ ...current, [id]: (current[id] ?? 0) + 1 }));
 
-  const confirm = async () => {
-    if (!summary) return;
-    try {
-      const result = await guardConfirm(summary.order_id);
-      setStatus(`Paid. Capture ${result.capture_id}.`);
-      setSummary(undefined);
+  const onResult = (outcome: GuardOutcome) => {
+    if (outcome.status === "captured") {
+      setStatus(`Paid. Capture ${outcome.captureId}.`);
       setQuantities({});
-    } catch (error) {
-      setStatus((error as Error).message);
+    } else {
+      setStatus("Cancelled. Nothing was charged.");
     }
   };
 
-  const cancel = async () => {
-    if (!summary) return;
-    try {
-      await guardCancel(summary.order_id);
-      setStatus("Cancelled. Nothing was charged.");
-      setSummary(undefined);
-    } catch (error) {
-      setStatus((error as Error).message);
-    }
-  };
+  const buttons = attach(
+    { createOrder: async () => (await createOrder(cart, tampered)).order_id },
+    {
+      apiBase: "/api",
+      onResult,
+      onError: (error) => setStatus(error.message),
+      returnFocus: () => statusRef.current,
+    },
+  );
 
   return (
     <main>
       <h1>Pay Guard demo store</h1>
-      <p role="status">{status}</p>
+      <p role="status" tabIndex={-1} ref={statusRef}>
+        {status}
+      </p>
 
       <ul>
         {products.map((product) => (
@@ -125,21 +80,14 @@ export function App() {
         </label>
       )}
 
-      {summary && <GuardPanel summary={summary} onConfirm={confirm} onCancel={cancel} />}
-
-      {config && cart.length > 0 && !summary && (
+      {config && cart.length > 0 && (
         <PayPalScriptProvider
           options={{ clientId: config.paypal_client_id, currency: config.currency }}
         >
           <PayPalButtons
             // Rebuild the buttons when the cart changes so createOrder sends the current cart.
             forceReRender={[cart, tampered]}
-            createOrder={async () => (await createOrder(cart, tampered)).order_id}
-            // No capture here: approval only opens the guard.
-            onApprove={async ({ orderID }) => {
-              setSummary(await guardCheck(orderID));
-              setStatus("");
-            }}
+            {...buttons}
             onError={(error) => setStatus(`PayPal error: ${String(error)}`)}
           />
         </PayPalScriptProvider>

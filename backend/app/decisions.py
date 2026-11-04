@@ -23,12 +23,18 @@ CREATE TABLE IF NOT EXISTS decisions (
     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     risk_level TEXT,
     risk_score INTEGER,
-    rule_hits TEXT
+    rule_hits TEXT,
+    checked_at REAL
 )
 """
 
 # Columns added after the first release, for logs that already exist.
-ADDED_COLUMNS = {"risk_level": "TEXT", "risk_score": "INTEGER", "rule_hits": "TEXT"}
+ADDED_COLUMNS = {
+    "risk_level": "TEXT",
+    "risk_score": "INTEGER",
+    "rule_hits": "TEXT",
+    "checked_at": "REAL",
+}
 
 
 @dataclass(frozen=True)
@@ -40,6 +46,8 @@ class Decision:
     checked_total_cents: int | None
     checked_payee: str | None
     capture_id: str | None
+    risk_level: str | None
+    checked_at: float | None
 
 
 class DecisionLog:
@@ -78,7 +86,8 @@ class DecisionLog:
         with closing(self._connect()) as db:
             row = db.execute(
                 "SELECT order_id, status, cart_total_cents, currency, checked_total_cents, "
-                "checked_payee, capture_id FROM decisions WHERE order_id = ?",
+                "checked_payee, capture_id, risk_level, checked_at "
+                "FROM decisions WHERE order_id = ?",
                 (order_id,),
             ).fetchone()
         return Decision(*row) if row else None
@@ -91,6 +100,7 @@ class DecisionLog:
         risk_level: str,
         risk_score: int,
         rule_hits: str,
+        checked_at: float,
     ) -> bool:
         return self._update(
             order_id,
@@ -101,6 +111,7 @@ class DecisionLog:
             risk_level=risk_level,
             risk_score=risk_score,
             rule_hits=rule_hits,
+            checked_at=checked_at,
         )
 
     def claim_for_capture(self, order_id: str) -> bool:
