@@ -72,6 +72,19 @@ class RuleHit:
 
 
 @dataclass(frozen=True)
+class OrderLine:
+    name: str
+    quantity: int
+    unit_cents: int
+    description: str = ""
+    sku: str = ""
+
+    @property
+    def text(self) -> str:
+        return " ".join(part for part in (self.name, self.description, self.sku) if part)
+
+
+@dataclass(frozen=True)
 class OrderFacts:
     """PayPal's record of an order, reduced to what the rules read."""
 
@@ -81,6 +94,9 @@ class OrderFacts:
     payee_names: tuple[str, ...]
     extra_charge_cents: int
     text: str
+    # PayPal returns only the email for a payee that an order names by email.
+    payee_email: str | None = None
+    lines: tuple[OrderLine, ...] = ()
 
     @classmethod
     def from_paypal(cls, order: dict) -> "OrderFacts":
@@ -88,11 +104,22 @@ class OrderFacts:
         amount = unit["amount"]
         breakdown = amount.get("breakdown", {})
         payee = unit.get("payee", {})
-        names = [payee.get("display_name"), payee.get("email_address")]
+        # The seller writes its own statement name, so an imitation shows up there too.
+        names = [payee.get("display_name"), payee.get("email_address"), unit.get("soft_descriptor")]
         extras = ("shipping", "handling", "tax_total", "insurance")
         text_parts = [unit.get("description"), unit.get("soft_descriptor")]
+        lines = []
         for item in unit.get("items", []):
             text_parts += [item.get("name"), item.get("description")]
+            lines.append(
+                OrderLine(
+                    name=item["name"],
+                    quantity=int(item["quantity"]),
+                    unit_cents=catalog.to_cents(item["unit_amount"]["value"]),
+                    description=item.get("description", ""),
+                    sku=item.get("sku", ""),
+                )
+            )
         return cls(
             total_cents=catalog.to_cents(amount["value"]),
             currency=amount["currency_code"],
@@ -102,6 +129,8 @@ class OrderFacts:
                 catalog.to_cents(breakdown[key]["value"]) for key in extras if key in breakdown
             ),
             text=" ".join(part for part in text_parts if part),
+            payee_email=payee.get("email_address"),
+            lines=tuple(lines),
         )
 
 
@@ -219,8 +248,7 @@ RULES: tuple[Rule, ...] = (
 )
 
 
-def assess(order: OrderFacts, context: GuardContext) -> RiskResult:
-    hits = tuple(hit for rule in RULES for hit in rule(order, context))
+def result(hits: tuple[RuleHit, ...]) -> RiskResult:
     score = sum(hit.weight for hit in hits)
     if score >= HIGH_THRESHOLD:
         level = "High"
@@ -229,3 +257,7 @@ def assess(order: OrderFacts, context: GuardContext) -> RiskResult:
     else:
         level = "Low"
     return RiskResult(level, score, hits)
+
+
+def assess(order: OrderFacts, context: GuardContext) -> RiskResult:
+    return result(tuple(hit for rule in RULES for hit in rule(order, context)))

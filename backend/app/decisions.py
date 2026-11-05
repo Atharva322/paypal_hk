@@ -24,7 +24,8 @@ CREATE TABLE IF NOT EXISTS decisions (
     risk_level TEXT,
     risk_score INTEGER,
     rule_hits TEXT,
-    checked_at REAL
+    checked_at REAL,
+    mandate_id TEXT
 )
 """
 
@@ -34,6 +35,7 @@ ADDED_COLUMNS = {
     "risk_score": "INTEGER",
     "rule_hits": "TEXT",
     "checked_at": "REAL",
+    "mandate_id": "TEXT",
 }
 
 
@@ -48,6 +50,7 @@ class Decision:
     capture_id: str | None
     risk_level: str | None
     checked_at: float | None
+    mandate_id: str | None = None
 
 
 class DecisionLog:
@@ -74,19 +77,21 @@ class DecisionLog:
             )
             return cursor.rowcount == 1
 
-    def record_created(self, order_id: str, cart_total_cents: int, currency: str) -> None:
+    def record_created(
+        self, order_id: str, cart_total_cents: int, currency: str, mandate_id: str | None = None
+    ) -> None:
         with closing(self._connect()) as db, db:
             db.execute(
-                "INSERT INTO decisions (order_id, status, cart_total_cents, currency) "
-                "VALUES (?, 'created', ?, ?)",
-                (order_id, cart_total_cents, currency),
+                "INSERT INTO decisions (order_id, status, cart_total_cents, currency, mandate_id) "
+                "VALUES (?, 'created', ?, ?, ?)",
+                (order_id, cart_total_cents, currency, mandate_id),
             )
 
     def get(self, order_id: str) -> Decision | None:
         with closing(self._connect()) as db:
             row = db.execute(
                 "SELECT order_id, status, cart_total_cents, currency, checked_total_cents, "
-                "checked_payee, capture_id, risk_level, checked_at "
+                "checked_payee, capture_id, risk_level, checked_at, mandate_id "
                 "FROM decisions WHERE order_id = ?",
                 (order_id,),
             ).fetchone()

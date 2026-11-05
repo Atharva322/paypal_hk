@@ -1,5 +1,6 @@
 """Spoken text, built by code from PayPal's record so a model can never misstate it."""
 
+from .. import catalog
 from .rules import RiskResult
 
 MAX_ITEMS_READ_ALOUD = 3
@@ -42,6 +43,28 @@ def speak_amount(value: str, currency: str) -> str:
     return f"{amount}, {currency_name}"
 
 
+def mandate_lines(reviewed: dict) -> list[str]:
+    """Reads the mandate back before any agent runs, so a misheard request is caught here."""
+    fields = reviewed["fields"]
+    described = " ".join(
+        part for part in (fields["brand"], fields["item"]) if part
+    )
+    if fields["size"]:
+        described += f", size {fields['size']}"
+    lines = [f"Buy {fields['quantity']} {described}."]
+    if fields["details"]:
+        lines.append(f"Must be: {', '.join(fields['details'])}.")
+    if reviewed["max_total_cents"] is not None:
+        limit = catalog.to_value(reviewed["max_total_cents"])
+        lines.append(f"Spend at most {speak_amount(limit, fields['currency'])}, in total.")
+    if reviewed["store"]:
+        lines.append(f"Only from {reviewed['store']}, a store you've paid before.")
+    else:
+        lines.append("From any store you've paid before. Any other store needs your approval.")
+    lines += reviewed["problems"]
+    return lines
+
+
 def confirmation_for(level: str, pause_seconds: int) -> dict:
     if level == "High":
         return {"method": "type_total", "pause_seconds": pause_seconds}
@@ -54,12 +77,29 @@ def spoken_lines(summary: dict, risk: RiskResult, confirmation: dict) -> list[st
     lines = []
     if risk.level != "Low":
         lines.append(f"Warning: {risk.level.lower()} risk. {risk.hits[0].reason}")
+    return lines + _order_lines(summary, risk, confirmation)
 
+
+def mandate_spoken_lines(summary: dict, risk: RiskResult, confirmation: dict) -> list[str]:
+    """Every way the order differs from the request comes first: that is the decision."""
+    if risk.level == "Low":
+        lines = ["This order matches what you asked for."]
+    else:
+        lines = [f"Warning: {risk.level.lower()} risk. This order is not what you asked for."]
+        lines += [hit.reason for hit in risk.hits]
+    return lines + _order_lines(summary, risk, confirmation)
+
+
+SUSPECT_PAYEE_CODES = {"unknown_payee", "lookalike_name", "wrong_seller", "lookalike_seller"}
+
+
+def _order_lines(summary: dict, risk: RiskResult, confirmation: dict) -> list[str]:
+    lines = []
     hit_codes = {hit.code for hit in risk.hits}
     payee = str(summary["payee"])
-    if hit_codes & {"unknown_payee", "lookalike_name"}:
+    if hit_codes & SUSPECT_PAYEE_CODES:
         payee = spell(payee)
-    lines.append(f"Paying {payee}.")
+    lines.append(f"Paying {payee.rstrip('.')}.")
 
     lines.append(f"{speak_amount(summary['total'], summary['currency'])}.")
 

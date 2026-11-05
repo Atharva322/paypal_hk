@@ -3,3 +3,4 @@ uvicorn==0.54.0
 httpx==0.28.1
 python-dotenv==1.2.1
 pytest==8.4.2
+openai==3.46.0

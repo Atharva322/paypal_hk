@@ -1,22 +1,29 @@
 import json
 import time
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from dataclasses import asdict
-from decimal import Decimal, InvalidOperation
+from decimal import InvalidOperation
 from typing import Literal
 
 import httpx
+import openai
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field
 
-from . import catalog
+from . import catalog, intent
 from .config import Settings, load_settings
 from .decisions import Decision, DecisionLog
 from .guard.rules import GuardContext, OrderFacts, assess
-from .guard.summary import confirmation_for, spoken_lines
+from .guard.summary import confirmation_for, mandate_lines, spoken_lines
+from .mandates import MandateLog
+from .agent import mandate_brief, run_agent
 from .paypal import PayPalClient, PayPalError
+from .shop import SCENARIOS, Shop, ShopError
+from .stores import known_stores
+
+MandateReader = Callable[[str], Awaitable[intent.MandateDraft]]
 
 TAMPERED_PRICE_MULTIPLIER = 10
 
@@ -34,6 +41,19 @@ class CreateOrderRequest(BaseModel):
 
     items: list[CartLine] = Field(min_length=1)
     demo_attack: Literal["tampered_total"] | None = None
+
+
+class MandateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    request: str = Field(min_length=1, max_length=500)
+
+
+class AgentRunRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    mandate_id: str
+    scenario: Literal[SCENARIOS] = "clean"
 
 
 class OrderRef(BaseModel):
@@ -127,9 +147,13 @@ def summarize(order: dict) -> dict:
 
 
 def create_app(
-    settings: Settings | None = None, transport: httpx.AsyncBaseTransport | None = None
+    settings: Settings | None = None,
+    transport: httpx.AsyncBaseTransport | None = None,
+    mandate_reader: MandateReader | None = None,
+    agent_client=None,
 ) -> FastAPI:
     settings = settings or load_settings()
+    stores = known_stores(settings)
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
@@ -140,6 +164,16 @@ def create_app(
                 http, settings.paypal_client_id, settings.paypal_client_secret
             )
             app.state.log = DecisionLog(settings.database_path)
+            app.state.mandates = MandateLog(settings.database_path)
+            app.state.read_mandate = mandate_reader
+            app.state.agent_llm = agent_client
+            if settings.llm_api_key:
+                llm = openai.AsyncOpenAI(api_key=settings.llm_api_key, timeout=60)
+                if mandate_reader is None:
+                    app.state.read_mandate = lambda text: intent.read_request(
+                        llm, settings.mandate_model, text
+                    )
+                app.state.agent_llm = agent_client or llm
             yield
 
     app = FastAPI(title="Accessible Pay Guard", lifespan=lifespan)
@@ -151,6 +185,103 @@ def create_app(
     @app.exception_handler(httpx.TransportError)
     async def paypal_unreachable(_: Request, exc: httpx.TransportError) -> JSONResponse:
         return JSONResponse({"detail": "PayPal did not respond, safe to retry"}, status_code=504)
+
+    @app.post("/mandates")
+    async def draft_mandate(body: MandateRequest) -> dict:
+        if app.state.read_mandate is None:
+            raise HTTPException(503, "The assistant is not set up. Set LLM_API_KEY in .env.")
+        try:
+            draft = await app.state.read_mandate(body.request)
+        except (openai.OpenAIError, ValueError):
+            raise HTTPException(502, "The assistant could not read that. Try again.") from None
+        reviewed = intent.review(intent.draft_to_fields(draft), stores)
+        mandate_id = app.state.mandates.record_draft(
+            body.request, {**reviewed, "questions": draft.questions}
+        )
+        return {
+            "mandate_id": mandate_id,
+            "status": "draft",
+            **reviewed,
+            "questions": draft.questions,
+            "spoken": mandate_lines(reviewed) + draft.questions,
+        }
+
+    @app.post("/mandates/{mandate_id}/confirm")
+    async def confirm_mandate(mandate_id: str, fields: intent.MandateFields) -> dict:
+        """The user's own fields, after reading the draft back. These are what orders face."""
+        if app.state.mandates.get(mandate_id) is None:
+            raise HTTPException(404, "Unknown mandate")
+        reviewed = intent.review(fields, stores)
+        if reviewed["problems"]:
+            raise HTTPException(422, reviewed["problems"])
+        if not app.state.mandates.confirm(mandate_id, reviewed):
+            raise HTTPException(409, "This mandate is already confirmed")
+        return {
+            "mandate_id": mandate_id,
+            "status": "confirmed",
+            **reviewed,
+            "spoken": mandate_lines(reviewed),
+        }
+
+    @app.post("/agent/runs")
+    async def agent_run(body: AgentRunRequest) -> dict:
+        """Let the agent shop for a confirmed mandate. It ends at an order, never a payment."""
+        mandate = app.state.mandates.get(body.mandate_id)
+        if mandate is None:
+            raise HTTPException(404, "Unknown mandate")
+        if mandate.status != "confirmed":
+            raise HTTPException(409, "Confirm the mandate before the agent shops")
+        if body.scenario != "clean" and not settings.demo_attacks_enabled:
+            raise HTTPException(403, "Demo attacks are disabled")
+        if app.state.agent_llm is None:
+            raise HTTPException(503, "The agent is not set up. Set LLM_API_KEY in .env.")
+        try:
+            shop = Shop(body.scenario, settings.demo_lookalike_payee)
+        except ShopError as error:
+            raise HTTPException(400, str(error)) from None
+
+        async def place_order(lines: list[dict], size: str | None) -> dict:
+            order_body, total_cents, store = shop.order_body(lines, size)
+            order = await app.state.paypal.create_order(order_body)
+            app.state.log.record_created(
+                order["id"], total_cents, catalog.CURRENCY, body.mandate_id
+            )
+            return {
+                "order_id": order["id"],
+                "store": store.name,
+                "total": catalog.to_value(total_cents),
+                "items": [item["name"] for item in order_body["purchase_units"][0]["items"]],
+            }
+
+        try:
+            run = await run_agent(
+                app.state.agent_llm,
+                settings.agent_model,
+                mandate_brief(mandate.confirmed),
+                shop,
+                place_order,
+            )
+        except openai.OpenAIError:
+            raise HTTPException(502, "The agent could not reach its model. Try again.") from None
+        return {
+            "mandate_id": body.mandate_id,
+            "scenario": body.scenario,
+            "order": run.order,
+            "steps": run.steps,
+            "final_text": run.final_text,
+        }
+
+    @app.get("/mandates/{mandate_id}")
+    async def get_mandate(mandate_id: str) -> dict:
+        mandate = app.state.mandates.get(mandate_id)
+        if mandate is None:
+            raise HTTPException(404, "Unknown mandate")
+        return {
+            "mandate_id": mandate.mandate_id,
+            "status": mandate.status,
+            "request": mandate.request_text,
+            **(mandate.confirmed or mandate.draft),
+        }
 
     @app.get("/config")
     async def config() -> dict:

@@ -16,6 +16,11 @@ class Settings:
     allowed_merchant_ids: frozenset[str] = frozenset()
     demo_attacks_enabled: bool = False
     high_risk_pause_seconds: int = 10
+    llm_api_key: str = ""
+    mandate_model: str = "gpt-5.5"
+    # The cheap tier people deploy for shopping, and the one the day 1 injection fooled.
+    agent_model: str = "gpt-5.4-mini"
+    demo_lookalike_payee: str = ""
 
 
 def load_settings() -> Settings:
@@ -35,4 +40,8 @@ def load_settings() -> Settings:
             if merchant.strip()
         ),
         demo_attacks_enabled=os.environ.get("DEMO_ATTACKS_ENABLED", "").lower() == "true",
+        llm_api_key=os.environ.get("LLM_API_KEY", ""),
+        mandate_model=os.environ.get("MANDATE_MODEL") or Settings.mandate_model,
+        agent_model=os.environ.get("AGENT_MODEL") or Settings.agent_model,
+        demo_lookalike_payee=os.environ.get("DEMO_LOOKALIKE_PAYEE", ""),
     )

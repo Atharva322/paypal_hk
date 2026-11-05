@@ -16,3 +16,7 @@ dist/
 paypal sandbox*.txt
 test-results/
 playwright-report/
+
+# Private research notes and reports
+research_notes/
+reports/

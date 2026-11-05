@@ -1,15 +1,22 @@
-# Accessible Pay Guard
+# Pay Guard
 
-A drop-in layer that makes PayPal Checkout safe to use by ear. After the buyer approves and before capture, it reads the real order aloud, runs a scam check, and waits for a deliberate confirmation.
+An intent-locked checkout for AI shopping agents on PayPal. You tell the agent what you want and your limit; it shops and creates a PayPal order; before any money moves, the guard re-reads the order from PayPal and holds it against what you asked for. You hear only what differs, in an accessible confirmation, and decide.
 
-Status: guard checkpoint, rules engine and accessible dialog built (phases 0 to 4). See the [architecture and build plan](docs/pay-guard-architecture-and-build-plan.pdf).
+The agent proposes, PayPal holds the truth, and the person approves the differences. The guard's checks are plain code, not a model, so a page that fools the agent cannot talk its way past them.
+
+Status (work in progress):
+
+- Done: request to mandate (AI drafts, code checks, you confirm); shopping agent over three mock stores (honest, poisoned product page, lookalike seller) creating real sandbox orders; rules that compare an order with its mandate; the accessible risk-scaled confirmation dialog.
+- Next: wiring approval, check, dialog and capture into one flow.
+
+The original merchant-side guard is described in the [first build plan](docs/pay-guard-architecture-and-build-plan.pdf).
 
 ## Run locally
 
 Needs Python 3.12+, Node 22+ and a [PayPal developer](https://developer.paypal.com) account.
 
-1. In the developer dashboard, create a sandbox REST app, plus sandbox business and personal accounts.
-2. Copy `.env.example` to `.env` and fill in the sandbox client ID and secret. Run the smoke test below, then put the merchant ID it prints into `ALLOWED_MERCHANT_IDS`.
+1. In the developer dashboard, create a sandbox REST app, plus sandbox business and personal accounts. For the lookalike scenario, add a second business account named "Trai1head Running".
+2. Copy `.env.example` to `.env` and fill in the sandbox client ID and secret, an OpenAI API key, and the lookalike account's email. Run the smoke test below, then put the merchant ID it prints into `ALLOWED_MERCHANT_IDS`.
 3. Start the backend:
 
    ```sh
@@ -28,7 +35,14 @@ Needs Python 3.12+, Node 22+ and a [PayPal developer](https://developer.paypal.c
    npm run dev
    ```
 
-5. Add an item, pay with the sandbox personal account, then confirm or cancel in the review step.
+5. Type what the agent should buy, check what it reads back, and confirm the mandate.
+
+To watch the real agent shop all three scenarios and see the guard's verdict on each sandbox order:
+
+```sh
+cd backend
+.venv/Scripts/python -m scripts.run_scenarios 3
+```
 
 ## Test
 

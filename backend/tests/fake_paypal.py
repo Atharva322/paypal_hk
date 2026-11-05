@@ -27,7 +27,9 @@ class FakePayPal:
         if request.method == "POST" and path == "/v2/checkout/orders":
             order_id = f"ORDER{len(self.orders) + 1}"
             body = json.loads(request.content)
-            unit = {**body["purchase_units"][0], "payee": dict(PAYEE)}
+            # Like PayPal: the app's own merchant unless the order names another payee.
+            sent = body["purchase_units"][0]
+            unit = {**sent, "payee": sent.get("payee") or dict(PAYEE)}
             self.orders[order_id] = {"id": order_id, "status": "CREATED", "purchase_units": [unit]}
             return httpx.Response(201, json={"id": order_id, "status": "CREATED"})
         order_id = path.split("/")[4]
