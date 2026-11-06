@@ -20,7 +20,7 @@ function detailsList(summary: GuardSummary): HTMLDListElement {
     value.append(content);
     list.append(element("dt", { textContent: term }), value);
   };
-  add("Paying", summary.payee);
+  add("Paying", summary.payee_name ?? summary.payee);
   add("Total", `${summary.total} ${summary.currency}`);
   const items = element("ul");
   for (const item of summary.items) {

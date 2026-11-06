@@ -99,6 +99,8 @@ def _order_lines(summary: dict, risk: RiskResult, confirmation: dict) -> list[st
     payee = str(summary["payee"])
     if hit_codes & SUSPECT_PAYEE_CODES:
         payee = spell(payee)
+    elif summary.get("payee_name"):
+        payee = summary["payee_name"]
     lines.append(f"Paying {payee.rstrip('.')}.")
 
     lines.append(f"{speak_amount(summary['total'], summary['currency'])}.")

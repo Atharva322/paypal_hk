@@ -20,3 +20,4 @@ playwright-report/
 # Private research notes and reports
 research_notes/
 reports/
+*.tsbuildinfo

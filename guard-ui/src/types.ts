@@ -2,7 +2,10 @@ export type RiskLevel = "Low" | "Medium" | "High";
 
 export interface GuardSummary {
   order_id: string;
+  /** The PayPal account being paid. */
   payee: string;
+  /** The store's name, when the account belongs to a store the user has paid before. */
+  payee_name?: string | null;
   total: string;
   currency: string;
   items: { name: string; quantity: number; unit_price: string }[];

@@ -1,3 +1,5 @@
+import type { GuardSummary } from "pay-guard-ui";
+
 export interface Product {
   id: string;
   name: string;
@@ -58,6 +60,40 @@ export interface Mandate {
   questions?: string[];
   spoken: string[];
 }
+
+export type Scenario = "clean" | "gift_card" | "lookalike" | "compromised";
+
+export interface AgentOrder {
+  order_id: string;
+  store: string;
+  total: string;
+  items: string[];
+  simulated_hijack: boolean;
+}
+
+export interface AgentRun {
+  scenario: Scenario;
+  order: AgentOrder | null;
+  steps: { tool: string; arguments: Record<string, unknown>; result: string }[];
+  final_text: string;
+}
+
+export interface Receipt {
+  order_id: string;
+  decision: "created" | "checked" | "capturing" | "captured" | "cancelled";
+  decided_at: string;
+  capture_id: string | null;
+  asked: { request: string; read_back: string[] } | null;
+  shown: GuardSummary | null;
+}
+
+export const runAgent = (mandateId: string, scenario: Scenario) =>
+  request<AgentRun>("/agent/runs", { mandate_id: mandateId, scenario });
+export const previewOrder = (orderId: string) =>
+  request<GuardSummary>("/guard/preview", { order_id: orderId });
+export const discardOrder = (orderId: string) =>
+  request<{ status: string }>("/guard/cancel", { order_id: orderId });
+export const getReceipt = (orderId: string) => request<Receipt>(`/receipts/${orderId}`);
 
 export const draftMandate = (text: string) => request<Mandate>("/mandates", { request: text });
 export const confirmMandate = (id: string, fields: MandateFields) =>

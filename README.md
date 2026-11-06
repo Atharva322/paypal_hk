@@ -6,8 +6,8 @@ The agent proposes, PayPal holds the truth, and the person approves the differen
 
 Status (work in progress):
 
-- Done: request to mandate (AI drafts, code checks, you confirm); shopping agent over three mock stores (honest, poisoned product page, lookalike seller) creating real sandbox orders; rules that compare an order with its mandate; the accessible risk-scaled confirmation dialog.
-- Next: wiring approval, check, dialog and capture into one flow.
+- Done: request to mandate (AI drafts, code checks, you confirm); shopping agent over mock stores (honest, poisoned product page, lookalike seller, and a labelled simulated hijack) creating real sandbox orders; rules that compare an order with its mandate; a check before PayPal opens and again after approval; the accessible risk-scaled confirmation dialog; a consent receipt of what was asked, shown and decided.
+- Next: polish, deployment and the demo video.
 
 The original merchant-side guard is described in the [first build plan](docs/pay-guard-architecture-and-build-plan.pdf).
 
@@ -53,6 +53,10 @@ cd backend
 cd ../guard-ui
 npm install
 npx playwright test   # real-browser dialog and axe-core checks; uses Edge by default
+
+cd ../demo-store
+npm install
+npx playwright test   # the whole page flow per scenario, with PayPal's script stubbed
 ```
 
 Set `PW_CHANNEL=chrome` or `PW_CHANNEL=chromium` to run the browser tests elsewhere.

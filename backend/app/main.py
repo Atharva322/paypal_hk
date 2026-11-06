@@ -16,11 +16,12 @@ from . import catalog, intent
 from .config import Settings, load_settings
 from .decisions import Decision, DecisionLog
 from .guard.rules import GuardContext, OrderFacts, assess
-from .guard.summary import confirmation_for, mandate_lines, spoken_lines
+from .guard.mandate_rules import Mandate, assess_against_mandate
+from .guard.summary import confirmation_for, mandate_lines, mandate_spoken_lines, spoken_lines
 from .mandates import MandateLog
 from .agent import mandate_brief, run_agent
 from .paypal import PayPalClient, PayPalError
-from .shop import SCENARIOS, Shop, ShopError
+from .shop import HIJACK_LINE, SCENARIOS, Shop, ShopError
 from .stores import known_stores
 
 MandateReader = Callable[[str], Awaitable[intent.MandateDraft]]
@@ -241,6 +242,9 @@ def create_app(
             raise HTTPException(400, str(error)) from None
 
         async def place_order(lines: list[dict], size: str | None) -> dict:
+            hijacked = body.scenario == "compromised"
+            if hijacked:
+                lines = [*lines, HIJACK_LINE]
             order_body, total_cents, store = shop.order_body(lines, size)
             order = await app.state.paypal.create_order(order_body)
             app.state.log.record_created(
@@ -251,6 +255,7 @@ def create_app(
                 "store": store.name,
                 "total": catalog.to_value(total_cents),
                 "items": [item["name"] for item in order_body["purchase_units"][0]["items"]],
+                "simulated_hijack": hijacked,
             }
 
         try:
@@ -315,42 +320,97 @@ def create_app(
             raise HTTPException(404, "Unknown order")
         return decision
 
+    def evaluate(decision: Decision, order: dict) -> dict:
+        """The guard's verdict on PayPal's record of the order, ready for the dialog.
+
+        An agent's order is held against its mandate; any other against the store's cart.
+        """
+        summary = summarize(order)
+        facts = OrderFacts.from_paypal(order)
+        # PayPal names a payee only by account; a store the user has paid gets its own name.
+        # "payee" stays the account, which is what the capture step compares.
+        known = next(
+            (s for s in stores if s.is_payee(facts.payee_merchant_id, facts.payee_email)), None
+        )
+        summary["payee_name"] = known.name if known else None
+        if decision.mandate_id:
+            mandate = app.state.mandates.get(decision.mandate_id)
+            risk = assess_against_mandate(facts, Mandate.from_review(mandate.confirmed, stores))
+            speak = mandate_spoken_lines
+        else:
+            context = GuardContext(
+                cart_total_cents=decision.cart_total_cents,
+                store_currency=decision.currency,
+                allowed_merchant_ids=settings.allowed_merchant_ids,
+            )
+            risk = assess(facts, context)
+            speak = spoken_lines
+        confirmation = confirmation_for(risk.level, settings.high_risk_pause_seconds)
+        return {
+            **summary,
+            "risk": {
+                "level": risk.level,
+                "score": risk.score,
+                "hits": [asdict(hit) for hit in risk.hits],
+            },
+            "confirmation": confirmation,
+            "spoken": speak(summary, risk, confirmation),
+        }
+
+    @app.post("/guard/preview")
+    async def guard_preview(ref: OrderRef) -> dict:
+        """The same verdict before approval, so a bad order can be refused before PayPal opens.
+
+        Records nothing: only the check after approval counts.
+        """
+        decision = require_decision(ref.order_id)
+        order = await app.state.paypal.get_order(ref.order_id)
+        return evaluate(decision, order)
+
     @app.post("/guard/check")
     async def guard_check(ref: OrderRef) -> dict:
         decision = require_decision(ref.order_id)
         order = await app.state.paypal.get_order(ref.order_id)
         if order["status"] != "APPROVED":
             raise HTTPException(409, f"Order is {order['status']}, not APPROVED")
-        summary = summarize(order)
-        risk = assess(
-            OrderFacts.from_paypal(order),
-            GuardContext(
-                cart_total_cents=decision.cart_total_cents,
-                store_currency=decision.currency,
-                allowed_merchant_ids=settings.allowed_merchant_ids,
-            ),
-        )
-        risk_body = {
-            "level": risk.level,
-            "score": risk.score,
-            "hits": [asdict(hit) for hit in risk.hits],
-        }
+        verdict = evaluate(decision, order)
         if not app.state.log.mark_checked(
             ref.order_id,
-            catalog.to_cents(summary["total"]),
-            summary["payee"],
-            risk.level,
-            risk.score,
-            json.dumps(risk_body["hits"]),
+            catalog.to_cents(verdict["total"]),
+            verdict["payee"],
+            verdict["risk"]["level"],
+            verdict["risk"]["score"],
+            json.dumps(verdict["risk"]["hits"]),
             time.time(),
+            json.dumps(verdict),
         ):
             raise HTTPException(409, "Order is already decided")
-        confirmation = confirmation_for(risk.level, settings.high_risk_pause_seconds)
+        return verdict
+
+    @app.get("/receipts/{order_id}")
+    async def receipt(order_id: str) -> dict:
+        """What was asked, what PayPal's order said, what the user was told, and the decision.
+
+        The evidence a dispute over an agent's purchase would need, and no card rule asks for yet.
+        """
+        row = app.state.log.receipt_row(order_id)
+        if row is None:
+            raise HTTPException(404, "Unknown order")
+        asked = None
+        if row["mandate_id"]:
+            mandate = app.state.mandates.get(row["mandate_id"])
+            asked = {
+                "request": mandate.request_text,
+                "mandate": mandate.confirmed["fields"],
+                "read_back": mandate_lines(mandate.confirmed),
+            }
         return {
-            **summary,
-            "risk": risk_body,
-            "confirmation": confirmation,
-            "spoken": spoken_lines(summary, risk, confirmation),
+            "order_id": order_id,
+            "decision": row["status"],
+            "decided_at": row["updated_at"],
+            "capture_id": row["capture_id"],
+            "asked": asked,
+            "shown": json.loads(row["shown"]) if row["shown"] else None,
         }
 
     @app.post("/guard/confirm")

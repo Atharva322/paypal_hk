@@ -8,6 +8,8 @@ export function MandateStep({ onConfirmed }: { onConfirmed: (mandate: Mandate) =
   const [request, setRequest] = useState("");
   const [draft, setDraft] = useState<Mandate>();
   const [fields, setFields] = useState<MandateFields>();
+  // Kept as typed, so commas and spaces survive editing; split only on confirm.
+  const [detailsText, setDetailsText] = useState("");
   const [confirmed, setConfirmed] = useState<Mandate>();
   const [status, setStatus] = useState("");
   const [busy, setBusy] = useState(false);
@@ -25,6 +27,7 @@ export function MandateStep({ onConfirmed }: { onConfirmed: (mandate: Mandate) =
       const mandate = await draftMandate(request);
       setDraft(mandate);
       setFields(mandate.fields);
+      setDetailsText(mandate.fields.details.join(", "));
       setConfirmed(undefined);
       setStatus("");
     } catch (error) {
@@ -40,7 +43,16 @@ export function MandateStep({ onConfirmed }: { onConfirmed: (mandate: Mandate) =
     setBusy(true);
     try {
       // The limit field is labelled in US dollars, so that is the currency confirmed.
-      const mandate = await confirmMandate(draft.mandate_id, { ...fields, currency: "USD" });
+      const mandate = await confirmMandate(draft.mandate_id, {
+        ...fields,
+        item: fields.item.trim(),
+        brand: blankToNull(fields.brand ?? ""),
+        size: blankToNull(fields.size ?? ""),
+        details: detailsText.split(",").map((part) => part.trim()).filter(Boolean),
+        max_total: blankToNull(fields.max_total ?? ""),
+        store: blankToNull(fields.store ?? ""),
+        currency: "USD",
+      });
       setConfirmed(mandate);
       setStatus("");
       onConfirmed(mandate);
@@ -110,19 +122,17 @@ export function MandateStep({ onConfirmed }: { onConfirmed: (mandate: Mandate) =
             </label>
             <label>
               Brand (optional)
-              <input value={fields.brand ?? ""} onChange={(e) => set("brand", blankToNull(e.target.value))} />
+              <input value={fields.brand ?? ""} onChange={(e) => set("brand", e.target.value)} />
             </label>
             <label>
               Size (optional)
-              <input value={fields.size ?? ""} onChange={(e) => set("size", blankToNull(e.target.value))} />
+              <input value={fields.size ?? ""} onChange={(e) => set("size", e.target.value)} />
             </label>
             <label>
               Must be, separated by commas (optional)
               <input
-                value={fields.details.join(", ")}
-                onChange={(e) =>
-                  set("details", e.target.value.split(",").map((part) => part.trim()).filter(Boolean))
-                }
+                value={detailsText}
+                onChange={(e) => setDetailsText(e.target.value)}
               />
             </label>
             <label>
@@ -141,13 +151,13 @@ export function MandateStep({ onConfirmed }: { onConfirmed: (mandate: Mandate) =
               <input
                 inputMode="decimal"
                 value={fields.max_total ?? ""}
-                onChange={(e) => set("max_total", blankToNull(e.target.value))}
+                onChange={(e) => set("max_total", e.target.value)}
                 required
               />
             </label>
             <label>
               Store (leave blank to allow any store you've paid before)
-              <input value={fields.store ?? ""} onChange={(e) => set("store", blankToNull(e.target.value))} />
+              <input value={fields.store ?? ""} onChange={(e) => set("store", e.target.value)} />
             </label>
             <button type="submit" disabled={busy}>
               Confirm and let the agent shop

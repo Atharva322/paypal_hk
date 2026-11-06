@@ -25,7 +25,8 @@ CREATE TABLE IF NOT EXISTS decisions (
     risk_score INTEGER,
     rule_hits TEXT,
     checked_at REAL,
-    mandate_id TEXT
+    mandate_id TEXT,
+    shown TEXT
 )
 """
 
@@ -36,6 +37,8 @@ ADDED_COLUMNS = {
     "rule_hits": "TEXT",
     "checked_at": "REAL",
     "mandate_id": "TEXT",
+    # What the user was shown and heard at the check: the consent they gave or refused.
+    "shown": "TEXT",
 }
 
 
@@ -106,6 +109,7 @@ class DecisionLog:
         risk_score: int,
         rule_hits: str,
         checked_at: float,
+        shown: str | None = None,
     ) -> bool:
         return self._update(
             order_id,
@@ -117,7 +121,18 @@ class DecisionLog:
             risk_score=risk_score,
             rule_hits=rule_hits,
             checked_at=checked_at,
+            shown=shown,
         )
+
+    def receipt_row(self, order_id: str) -> dict | None:
+        with closing(self._connect()) as db:
+            db.row_factory = sqlite3.Row
+            row = db.execute(
+                "SELECT order_id, status, mandate_id, risk_level, risk_score, shown, "
+                "capture_id, created_at, updated_at FROM decisions WHERE order_id = ?",
+                (order_id,),
+            ).fetchone()
+        return dict(row) if row else None
 
     def claim_for_capture(self, order_id: str) -> bool:
         # "capturing" is allowed so a retry after a network failure can go through;

@@ -12,6 +12,7 @@ from dataclasses import dataclass
 
 from .. import catalog
 from ..stores import Store
+from .summary import spell
 from .rules import (
     CONFUSABLES,
     HIGH,
@@ -188,7 +189,11 @@ def lookalike_seller(order: OrderFacts, mandate: Mandate) -> list[RuleHit]:
                         continue
                     # Distance 0 counts too: a different seller using the exact name.
                     if _edit_distance(cleaned, target) <= (2 if len(target) > 6 else 1):
-                        reason = f"{name} looks like {store.name} but is a different seller."
+                        # Spelled, because "Trai1head" and "Trailhead" sound the same.
+                        reason = (
+                            f"The seller calls itself {name}, spelled {spell(name)}. "
+                            f"That looks like {store.name} but is a different seller."
+                        )
                         return [RuleHit("lookalike_seller", HIGH, reason)]
     return []
 
