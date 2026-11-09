@@ -1,0 +1,13 @@
+.env
+.env.*
+**/node_modules
+**/dist
+**/.venv
+**/__pycache__
+**/*.db
+**/test-results
+**/playwright-report
+research_notes
+reports
+paypal sandbox*.txt
+.git

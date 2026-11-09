@@ -1,0 +1,25 @@
+# Render blueprint: one Docker web service on the free plan.
+# Secrets are marked sync: false, so Render asks for them and they never live in the repo.
+services:
+  - type: web
+    name: pay-guard
+    runtime: docker
+    plan: free
+    healthCheckPath: /api/health
+    envVars:
+      - key: PAYPAL_CLIENT_ID
+        sync: false
+      - key: PAYPAL_CLIENT_SECRET
+        sync: false
+      - key: ALLOWED_MERCHANT_IDS
+        sync: false
+      - key: LLM_API_KEY
+        sync: false
+      - key: DEMO_LOOKALIKE_PAYEE
+        sync: false
+      - key: DEMO_ATTACKS_ENABLED
+        value: "true"
+      - key: MODEL_CALLS_PER_HOUR
+        value: "30"
+      - key: MODEL_CALLS_PER_DAY
+        value: "500"

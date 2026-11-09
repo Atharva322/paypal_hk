@@ -21,6 +21,9 @@ class Settings:
     # The cheap tier people deploy for shopping, and the one the day 1 injection fooled.
     agent_model: str = "gpt-5.4-mini"
     demo_lookalike_payee: str = ""
+    # Model calls (reading a request, an agent run) a public demo allows.
+    model_calls_per_hour: int = 30
+    model_calls_per_day: int = 500
 
 
 def load_settings() -> Settings:
@@ -44,4 +47,10 @@ def load_settings() -> Settings:
         mandate_model=os.environ.get("MANDATE_MODEL") or Settings.mandate_model,
         agent_model=os.environ.get("AGENT_MODEL") or Settings.agent_model,
         demo_lookalike_payee=os.environ.get("DEMO_LOOKALIKE_PAYEE", ""),
+        model_calls_per_hour=int(
+            os.environ.get("MODEL_CALLS_PER_HOUR") or Settings.model_calls_per_hour
+        ),
+        model_calls_per_day=int(
+            os.environ.get("MODEL_CALLS_PER_DAY") or Settings.model_calls_per_day
+        ),
     )

@@ -7,7 +7,7 @@ The agent proposes, PayPal holds the truth, and the person approves the differen
 Status (work in progress):
 
 - Done: request to mandate (AI drafts, code checks, you confirm); shopping agent over mock stores (honest, poisoned product page, lookalike seller, and a labelled simulated hijack) creating real sandbox orders; rules that compare an order with its mandate; a check before PayPal opens and again after approval; the accessible risk-scaled confirmation dialog; a consent receipt of what was asked, shown and decided.
-- Next: polish, deployment and the demo video.
+- Next: deployment and the demo video.
 
 The original merchant-side guard is described in the [first build plan](docs/pay-guard-architecture-and-build-plan.pdf).
 
@@ -43,6 +43,16 @@ To watch the real agent shop all three scenarios and see the guard's verdict on 
 cd backend
 .venv/Scripts/python -m scripts.run_scenarios 3
 ```
+
+## Deploy
+
+The [Dockerfile](Dockerfile) builds the store and serves it with the API from one process, the API under `/api`. [render.yaml](render.yaml) deploys it to Render's free plan:
+
+1. In Render, choose **New → Blueprint** and pick this repository.
+2. Fill in the secrets it asks for (the same values as `.env`). They stay in Render, never in the repo.
+3. Open the service URL once the build finishes, about five minutes the first time.
+
+A public demo spends your OpenAI credit on every request read and every agent run, so the server caps model calls per visitor (`MODEL_CALLS_PER_HOUR`, default 30) and in total (`MODEL_CALLS_PER_DAY`, default 500). The free plan sleeps when idle and keeps its database in `/tmp`, so receipts last only until the next restart.
 
 ## Test
 

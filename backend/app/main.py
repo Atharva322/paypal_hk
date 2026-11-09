@@ -18,6 +18,7 @@ from .decisions import Decision, DecisionLog
 from .guard.rules import GuardContext, OrderFacts, assess
 from .guard.mandate_rules import Mandate, assess_against_mandate
 from .guard.summary import confirmation_for, mandate_lines, mandate_spoken_lines, spoken_lines
+from .limits import ModelCallLimiter
 from .mandates import MandateLog
 from .agent import mandate_brief, run_agent
 from .paypal import PayPalClient, PayPalError
@@ -178,6 +179,16 @@ def create_app(
             yield
 
     app = FastAPI(title="Accessible Pay Guard", lifespan=lifespan)
+    limiter = ModelCallLimiter(settings.model_calls_per_hour, settings.model_calls_per_day)
+
+    def spend_model_call(request: Request) -> None:
+        refused = limiter.spend(request.client.host if request.client else "unknown")
+        if refused:
+            raise HTTPException(429, refused)
+
+    @app.get("/health")
+    async def health() -> dict:
+        return {"status": "ok"}
 
     @app.exception_handler(PayPalError)
     async def paypal_error(_: Request, exc: PayPalError) -> JSONResponse:
@@ -188,9 +199,10 @@ def create_app(
         return JSONResponse({"detail": "PayPal did not respond, safe to retry"}, status_code=504)
 
     @app.post("/mandates")
-    async def draft_mandate(body: MandateRequest) -> dict:
+    async def draft_mandate(body: MandateRequest, request: Request) -> dict:
         if app.state.read_mandate is None:
             raise HTTPException(503, "The assistant is not set up. Set LLM_API_KEY in .env.")
+        spend_model_call(request)
         try:
             draft = await app.state.read_mandate(body.request)
         except (openai.OpenAIError, ValueError):
@@ -225,7 +237,7 @@ def create_app(
         }
 
     @app.post("/agent/runs")
-    async def agent_run(body: AgentRunRequest) -> dict:
+    async def agent_run(body: AgentRunRequest, request: Request) -> dict:
         """Let the agent shop for a confirmed mandate. It ends at an order, never a payment."""
         mandate = app.state.mandates.get(body.mandate_id)
         if mandate is None:
@@ -240,6 +252,7 @@ def create_app(
             shop = Shop(body.scenario, settings.demo_lookalike_payee)
         except ShopError as error:
             raise HTTPException(400, str(error)) from None
+        spend_model_call(request)
 
         async def place_order(lines: list[dict], size: str | None) -> dict:
             hijacked = body.scenario == "compromised"
