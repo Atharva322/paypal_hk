@@ -10,7 +10,7 @@ SUMMARY = {
     "items": [{"name": "Wireless earbuds", "quantity": 1, "unit_price": "49.99"}],
 }
 LOW = RiskResult("Low", 0, ())
-HIGH = RiskResult("High", 60, (RuleHit("lookalike_name", 60, "The payee name imitates paypal."),))
+HIGH = RiskResult("High", 60, (RuleHit("wrong_seller", 60, "This is not the store you named."),))
 
 
 @pytest.mark.parametrize(
@@ -35,9 +35,10 @@ def test_spelling_keeps_lookalike_characters_apart():
     assert spell("paypa1") == "P-A-Y-P-A-1"
 
 
-def test_low_risk_reads_in_plan_order_without_a_warning():
+def test_low_risk_says_it_matches_then_reads_the_order():
     lines = spoken_lines(SUMMARY, LOW, confirmation_for("Low", 10))
     assert lines == [
+        "This order matches what you asked for.",
         "Paying gadgethub.shop.",
         "49 dollars and 99 cents, US dollars.",
         "1 Wireless earbuds.",
@@ -47,8 +48,9 @@ def test_low_risk_reads_in_plan_order_without_a_warning():
 
 def test_high_risk_warns_first_and_spells_the_payee():
     lines = spoken_lines(SUMMARY, HIGH, confirmation_for("High", 10))
-    assert lines[0] == "Warning: high risk. The payee name imitates paypal."
-    assert lines[1] == "Paying G-A-D-G-E-T-H-U-B dot S-H-O-P."
+    assert lines[0] == "Warning: high risk. This order is not what you asked for."
+    assert lines[1] == "This is not the store you named."
+    assert lines[2] == "Paying G-A-D-G-E-T-H-U-B dot S-H-O-P."
     assert lines[-1] == (
         "Cancel is selected: press Enter or Escape to cancel. To pay anyway, wait "
         "10 seconds, type the total in the total field and press Enter."
@@ -56,9 +58,9 @@ def test_high_risk_warns_first_and_spells_the_payee():
 
 
 def test_medium_risk_asks_for_two_presses():
-    medium = RiskResult("Medium", 30, (RuleHit("hidden_charges", 30, "Extra charges."),))
+    medium = RiskResult("Medium", 30, (RuleHit("unrequested_item", 30, "It adds socks."),))
     lines = spoken_lines(SUMMARY, medium, confirmation_for("Medium", 10))
-    assert lines[0] == "Warning: medium risk. Extra charges."
+    assert lines[:2] == ["Warning: medium risk. This order is not what you asked for.", "It adds socks."]
     assert lines[-1] == (
         "To pay, Tab to Confirm payment and press Enter twice. Press Escape to cancel."
     )

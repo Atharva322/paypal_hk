@@ -2,7 +2,7 @@ import pytest
 
 from app.guard.mandate_rules import Mandate, assess_against_mandate, requested_line
 from app.guard.rules import OrderFacts
-from app.guard.summary import confirmation_for, mandate_spoken_lines
+from app.guard.summary import confirmation_for, spoken_lines
 from app.stores import Store
 
 TRAILHEAD = Store(
@@ -207,7 +207,7 @@ def test_spoken_summary_lists_every_difference_then_spells_the_seller():
         "currency": "USD",
         "items": [{"name": SHOES["name"], "quantity": 1}, {"name": GIFT_CARD["name"], "quantity": 1}],
     }
-    lines = mandate_spoken_lines(summary, risk, confirmation_for(risk.level, 10))
+    lines = spoken_lines(summary, risk, confirmation_for(risk.level, 10))
     assert lines[0] == "Warning: high risk. This order is not what you asked for."
     assert lines[1:5] == [hit.reason for hit in risk.hits]
     assert "S-A-L-E-S at T-R-A-I-1-H-E-A-D dash R-U-N-N-I-N-G" in lines[5]
@@ -218,5 +218,5 @@ def test_spoken_summary_for_a_match():
     risk = assess_against_mandate(order(SHOES), mandate())
     summary = {"payee": "Trailhead Running Co.", "total": "74.00", "currency": "USD",
                "items": [{"name": SHOES["name"], "quantity": 1}]}
-    lines = mandate_spoken_lines(summary, risk, confirmation_for("Low", 10))
+    lines = spoken_lines(summary, risk, confirmation_for("Low", 10))
     assert lines[:2] == ["This order matches what you asked for.", "Paying Trailhead Running Co."]

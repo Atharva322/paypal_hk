@@ -1,3 +1,4 @@
+import asyncio
 import json
 import time
 from collections.abc import AsyncIterator, Awaitable, Callable
@@ -9,40 +10,23 @@ from typing import Literal
 import httpx
 import openai
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field
 
 from . import catalog, intent
 from .config import Settings, load_settings
 from .decisions import Decision, DecisionLog
-from .guard.rules import GuardContext, OrderFacts, assess
+from .guard.rules import OrderFacts
 from .guard.mandate_rules import Mandate, assess_against_mandate
-from .guard.summary import confirmation_for, mandate_lines, mandate_spoken_lines, spoken_lines
+from .guard.summary import confirmation_for, mandate_lines, spoken_lines
 from .limits import ModelCallLimiter
 from .mandates import MandateLog
-from .agent import mandate_brief, run_agent
+from .agent import OnStep, mandate_brief, run_agent
 from .paypal import PayPalClient, PayPalError
 from .shop import HIJACK_LINE, SCENARIOS, Shop, ShopError
 from .stores import known_stores
 
 MandateReader = Callable[[str], Awaitable[intent.MandateDraft]]
-
-TAMPERED_PRICE_MULTIPLIER = 10
-
-
-class CartLine(BaseModel):
-    # extra="forbid" rejects a browser that tries to send its own price.
-    model_config = ConfigDict(extra="forbid")
-
-    product_id: str
-    quantity: int = Field(ge=1, le=10)
-
-
-class CreateOrderRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    items: list[CartLine] = Field(min_length=1)
-    demo_attack: Literal["tampered_total"] | None = None
 
 
 class MandateRequest(BaseModel):
@@ -84,48 +68,6 @@ def require_confirmation(decision: Decision, request: ConfirmRequest, pause_seco
             raise HTTPException(403, "The pause has not finished")
         if not typed_total_matches(request.typed_total, decision.checked_total_cents):
             raise HTTPException(403, "The typed total does not match")
-
-
-def build_order(lines: list[CartLine], price_multiplier: int = 1) -> tuple[dict, int]:
-    """Returns the PayPal order body and the honest cart total.
-
-    A multiplier above 1 stands in for a compromised merchant script: the order sent to
-    PayPal is inflated, while the returned total stays what the buyer saw in the cart.
-    """
-    total_cents = 0
-    items = []
-    for line in lines:
-        product = catalog.PRODUCTS.get(line.product_id)
-        if product is None:
-            raise HTTPException(422, f"Unknown product: {line.product_id}")
-        total_cents += product.price_cents * line.quantity
-        items.append(
-            {
-                "name": product.name,
-                "quantity": str(line.quantity),
-                "unit_amount": {
-                    "currency_code": catalog.CURRENCY,
-                    "value": catalog.to_value(product.price_cents * price_multiplier),
-                },
-            }
-        )
-    value = catalog.to_value(total_cents * price_multiplier)
-    body = {
-        "intent": "CAPTURE",
-        "purchase_units": [
-            {
-                "amount": {
-                    "currency_code": catalog.CURRENCY,
-                    "value": value,
-                    "breakdown": {
-                        "item_total": {"currency_code": catalog.CURRENCY, "value": value}
-                    },
-                },
-                "items": items,
-            }
-        ],
-    }
-    return body, total_cents
 
 
 def summarize(order: dict) -> dict:
@@ -236,9 +178,13 @@ def create_app(
             "spoken": mandate_lines(reviewed),
         }
 
-    @app.post("/agent/runs")
-    async def agent_run(body: AgentRunRequest, request: Request) -> dict:
-        """Let the agent shop for a confirmed mandate. It ends at an order, never a payment."""
+    def prepare_run(
+        body: AgentRunRequest, request: Request
+    ) -> Callable[[OnStep | None], Awaitable[dict]]:
+        """Checks a run may start, then returns it: the agent shops for a confirmed mandate.
+
+        It ends at an order, never a payment.
+        """
         mandate = app.state.mandates.get(body.mandate_id)
         if mandate is None:
             raise HTTPException(404, "Unknown mandate")
@@ -271,23 +217,71 @@ def create_app(
                 "simulated_hijack": hijacked,
             }
 
-        try:
-            run = await run_agent(
-                app.state.agent_llm,
-                settings.agent_model,
-                mandate_brief(mandate.confirmed),
-                shop,
-                place_order,
-            )
-        except openai.OpenAIError:
-            raise HTTPException(502, "The agent could not reach its model. Try again.") from None
-        return {
-            "mandate_id": body.mandate_id,
-            "scenario": body.scenario,
-            "order": run.order,
-            "steps": run.steps,
-            "final_text": run.final_text,
-        }
+        async def go(on_step: OnStep | None) -> dict:
+            try:
+                run = await run_agent(
+                    app.state.agent_llm,
+                    settings.agent_model,
+                    mandate_brief(mandate.confirmed),
+                    shop,
+                    place_order,
+                    on_step,
+                )
+            except openai.OpenAIError:
+                raise HTTPException(502, "The agent could not reach its model. Try again.") from None
+            return {
+                "mandate_id": body.mandate_id,
+                "scenario": body.scenario,
+                "order": run.order,
+                "steps": run.steps,
+                "final_text": run.final_text,
+            }
+
+        return go
+
+    @app.post("/agent/runs")
+    async def agent_run(body: AgentRunRequest, request: Request) -> dict:
+        return await prepare_run(body, request)(None)
+
+    @app.post("/agent/runs/stream")
+    async def agent_run_stream(body: AgentRunRequest, request: Request) -> StreamingResponse:
+        """The same run, one JSON line per step as it happens, then the result.
+
+        Lines: {"type": "step", "step": ...}, then {"type": "done", "run": ...}
+        or {"type": "error", "detail": ...}. A refused start is a plain error response.
+        """
+        go = prepare_run(body, request)
+        events: asyncio.Queue[dict] = asyncio.Queue()
+
+        async def on_step(step: dict) -> None:
+            await events.put({"type": "step", "step": step})
+
+        async def work() -> None:
+            try:
+                await events.put({"type": "done", "run": await go(on_step)})
+            except HTTPException as error:
+                await events.put({"type": "error", "detail": error.detail})
+            except (PayPalError, httpx.TransportError):
+                await events.put({"type": "error", "detail": "PayPal did not take the order. Try again."})
+
+        async def lines() -> AsyncIterator[str]:
+            task = asyncio.create_task(work())
+            try:
+                while True:
+                    event = await events.get()
+                    yield json.dumps(event) + "\n"
+                    if event["type"] != "step":
+                        return
+            finally:
+                # The page went away mid-run: stop shopping for nobody.
+                task.cancel()
+
+        return StreamingResponse(
+            lines(),
+            media_type="application/x-ndjson",
+            # Proxies must pass each line on at once, not hold the whole run.
+            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        )
 
     @app.get("/mandates/{mandate_id}")
     async def get_mandate(mandate_id: str) -> dict:
@@ -310,23 +304,6 @@ def create_app(
             "demo_attacks_enabled": settings.demo_attacks_enabled,
         }
 
-    @app.get("/products")
-    async def products() -> list[dict]:
-        return [
-            {"id": p.id, "name": p.name, "price": catalog.to_value(p.price_cents)}
-            for p in catalog.PRODUCTS.values()
-        ]
-
-    @app.post("/orders")
-    async def create_order(request: CreateOrderRequest) -> dict:
-        if request.demo_attack and not settings.demo_attacks_enabled:
-            raise HTTPException(403, "Demo attacks are disabled")
-        multiplier = TAMPERED_PRICE_MULTIPLIER if request.demo_attack else 1
-        body, total_cents = build_order(request.items, multiplier)
-        order = await app.state.paypal.create_order(body)
-        app.state.log.record_created(order["id"], total_cents, catalog.CURRENCY)
-        return {"order_id": order["id"]}
-
     def require_decision(order_id: str) -> Decision:
         decision = app.state.log.get(order_id)
         if decision is None:
@@ -334,10 +311,7 @@ def create_app(
         return decision
 
     def evaluate(decision: Decision, order: dict) -> dict:
-        """The guard's verdict on PayPal's record of the order, ready for the dialog.
-
-        An agent's order is held against its mandate; any other against the store's cart.
-        """
+        """The guard's verdict on PayPal's record of the order, held against its mandate."""
         summary = summarize(order)
         facts = OrderFacts.from_paypal(order)
         # PayPal names a payee only by account; a store the user has paid gets its own name.
@@ -346,18 +320,8 @@ def create_app(
             (s for s in stores if s.is_payee(facts.payee_merchant_id, facts.payee_email)), None
         )
         summary["payee_name"] = known.name if known else None
-        if decision.mandate_id:
-            mandate = app.state.mandates.get(decision.mandate_id)
-            risk = assess_against_mandate(facts, Mandate.from_review(mandate.confirmed, stores))
-            speak = mandate_spoken_lines
-        else:
-            context = GuardContext(
-                cart_total_cents=decision.cart_total_cents,
-                store_currency=decision.currency,
-                allowed_merchant_ids=settings.allowed_merchant_ids,
-            )
-            risk = assess(facts, context)
-            speak = spoken_lines
+        mandate = app.state.mandates.get(decision.mandate_id)
+        risk = assess_against_mandate(facts, Mandate.from_review(mandate.confirmed, stores))
         confirmation = confirmation_for(risk.level, settings.high_risk_pause_seconds)
         return {
             **summary,
@@ -367,7 +331,7 @@ def create_app(
                 "hits": [asdict(hit) for hit in risk.hits],
             },
             "confirmation": confirmation,
-            "spoken": speak(summary, risk, confirmation),
+            "spoken": spoken_lines(summary, risk, confirmation),
         }
 
     @app.post("/guard/preview")

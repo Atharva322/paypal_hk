@@ -125,18 +125,25 @@ async function mockBackend(page: Page) {
         store: "Trailhead Running Co.", problems: [], spoken: READ_BACK,
       });
     }
-    if (path === "/agent/runs") {
+    if (path === "/agent/runs/stream") {
       scenario = route.request().postDataJSON().scenario;
       const chosen = SCENARIOS[scenario];
-      return json({
+      const steps = chosen.steps.map((tool) => ({
+        tool,
+        arguments: tool === "search_products" ? { query: "running shoes" } : { product_id: "th-road" },
+        result: "ok",
+      }));
+      const run = {
         scenario,
         order: chosen.order && { order_id: "ORDER1", store: "Trailhead Running Co.", ...chosen.order },
-        steps: chosen.steps.map((tool) => ({
-          tool,
-          arguments: tool === "search_products" ? { query: "running shoes" } : { product_id: "th-road" },
-          result: "ok",
-        })),
+        steps,
         final_text: "I won't add a gift card the customer didn't ask for.",
+      };
+      // One JSON event per line, as the server streams them.
+      const events = [...steps.map((step) => ({ type: "step", step })), { type: "done", run }];
+      return route.fulfill({
+        contentType: "application/x-ndjson",
+        body: events.map((event) => `${JSON.stringify(event)}\n`).join(""),
       });
     }
     const current = SCENARIOS[scenario].verdict;
@@ -281,4 +288,33 @@ test("edited fields keep their spaces and commas, and are cleaned only on confir
     details: ["road", "neutral"],
     brand: null,
   });
+});
+
+test("a run that fails part way shows why, and offers no PayPal button", async ({ page }) => {
+  await page.route("**/api/agent/runs/stream", (route) =>
+    route.fulfill({
+      contentType: "application/x-ndjson",
+      body: [
+        { type: "step", step: { tool: "search_products", arguments: { query: "shoes" }, result: "[]" } },
+        { type: "error", detail: "The agent could not reach its model. Try again." },
+      ]
+        .map((event) => `${JSON.stringify(event)}\n`)
+        .join(""),
+    }),
+  );
+  await confirmMandate(page);
+  await page.getByRole("button", { name: "Let the agent shop" }).click();
+  await expect(page.getByRole("status").filter({ hasText: "could not reach its model" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "PayPal (test stub)" })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Let the agent shop" })).toBeEnabled();
+});
+
+test("dark mode keeps every stage readable", async ({ page }) => {
+  await page.emulateMedia({ colorScheme: "dark" });
+  await confirmMandate(page);
+  await shop(page, /Simulated hijacked agent/);
+  await expectNoViolations(page);
+  await page.getByRole("button", { name: "PayPal (test stub)" }).click();
+  await expect(page.getByRole("dialog")).toHaveAccessibleName("Review payment: High risk");
+  await expectNoViolations(page);
 });

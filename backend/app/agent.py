@@ -64,6 +64,7 @@ TOOLS = [
 
 # Called with the agent's chosen lines and size; creates the order and returns its facts.
 PlaceOrder = Callable[[list[dict], str | None], Awaitable[dict]]
+OnStep = Callable[[dict], Awaitable[None]]
 
 
 @dataclass
@@ -88,7 +89,14 @@ def mandate_brief(reviewed: dict) -> str:
     return "\n".join(lines)
 
 
-async def run_agent(client, model: str, brief: str, shop: Shop, place_order: PlaceOrder) -> AgentRun:
+async def run_agent(
+    client,
+    model: str,
+    brief: str,
+    shop: Shop,
+    place_order: PlaceOrder,
+    on_step: OnStep | None = None,
+) -> AgentRun:
     run = AgentRun()
 
     async def call_tool(name: str, args: dict) -> str:
@@ -117,7 +125,10 @@ async def run_agent(client, model: str, brief: str, shop: Shop, place_order: Pla
                 result = await call_tool(call.name, args)
             except ShopError as error:
                 result = f"Error: {error}"
-            run.steps.append({"tool": call.name, "arguments": args, "result": result})
+            step = {"tool": call.name, "arguments": args, "result": result}
+            run.steps.append(step)
+            if on_step:
+                await on_step(step)
             outputs.append({"type": "function_call_output", "call_id": call.call_id, "output": result})
             if run.order:
                 # One order is the whole job; whatever the model says next changes nothing.

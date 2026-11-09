@@ -74,13 +74,6 @@ def confirmation_for(level: str, pause_seconds: int) -> dict:
 
 
 def spoken_lines(summary: dict, risk: RiskResult, confirmation: dict) -> list[str]:
-    lines = []
-    if risk.level != "Low":
-        lines.append(f"Warning: {risk.level.lower()} risk. {risk.hits[0].reason}")
-    return lines + _order_lines(summary, risk, confirmation)
-
-
-def mandate_spoken_lines(summary: dict, risk: RiskResult, confirmation: dict) -> list[str]:
     """Every way the order differs from the request comes first: that is the decision."""
     if risk.level == "Low":
         lines = ["This order matches what you asked for."]
@@ -90,7 +83,7 @@ def mandate_spoken_lines(summary: dict, risk: RiskResult, confirmation: dict) ->
     return lines + _order_lines(summary, risk, confirmation)
 
 
-SUSPECT_PAYEE_CODES = {"unknown_payee", "lookalike_name", "wrong_seller", "lookalike_seller"}
+SUSPECT_PAYEE_CODES = {"wrong_seller", "lookalike_seller"}
 
 
 def _order_lines(summary: dict, risk: RiskResult, confirmation: dict) -> list[str]:

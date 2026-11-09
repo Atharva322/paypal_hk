@@ -3,20 +3,174 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="color-scheme" content="light dark" />
     <title>Pay Guard demo store</title>
     <style>
-      body { font: 1.125rem/1.5 system-ui, sans-serif; max-width: 40rem; margin: 0 auto; padding: 1rem; }
-      label { display: block; margin: 0.75rem 0; }
-      input, textarea { display: block; width: 100%; box-sizing: border-box; font: inherit; padding: 0.5rem; margin-top: 0.25rem; }
-      button { font: inherit; min-height: 44px; padding: 0.5rem 1rem; margin-top: 0.5rem; }
-      :focus-visible { outline: 3px solid #1a5fb4; outline-offset: 2px; }
-      label.choice { display: flex; gap: 0.5rem; align-items: baseline; }
-      label.choice input { display: inline; width: auto; }
-      fieldset { margin: 1rem 0; }
-      .warning { border-left: 4px solid #a51d2d; padding-left: 0.75rem; font-weight: 600; }
-      .simulation { border-left: 4px solid #865e3c; padding-left: 0.75rem; }
-      blockquote { margin: 0.5rem 0; padding-left: 0.75rem; border-left: 3px solid #77767b; }
+      /* Page styles stay inside main: the guard's dialog sits outside it with its own. */
+      :root {
+        --bg: #f3f5f8;
+        --surface: #ffffff;
+        --text: #16202a;
+        --muted: #4a5663;
+        --border: #d5dbe1;
+        --field: #7b8794;
+        --accent: #0b57d0;
+        --accent-hover: #0842a0;
+        --on-accent: #ffffff;
+        --accent-soft: #e8f0fe;
+        --focus: #0b57d0;
+        --ok-bg: #e6f4ea;
+        --ok-text: #0d5b26;
+        --warn-bg: #fff4e0;
+        --warn-text: #7a4300;
+        --danger-bg: #fdecea;
+        --danger-text: #a3140a;
+        --sim-bg: #f3eefc;
+        --sim-text: #4b2a8a;
+        --shadow: 0 1px 2px rgb(16 24 40 / 6%), 0 4px 16px rgb(16 24 40 / 5%);
+      }
+      @media (prefers-color-scheme: dark) {
+        :root {
+          --bg: #0f141a;
+          --surface: #18202a;
+          --text: #e7ecf1;
+          --muted: #a9b4bf;
+          --border: #2c3743;
+          --field: #6b7785;
+          --accent: #8ab4ff;
+          --accent-hover: #a8c7ff;
+          --on-accent: #0b1220;
+          --accent-soft: #1e2a3d;
+          --focus: #8ab4ff;
+          --ok-bg: #12301d;
+          --ok-text: #8fd9a8;
+          --warn-bg: #3a2a0c;
+          --warn-text: #ffcf7a;
+          --danger-bg: #3d1512;
+          --danger-text: #ffaaa1;
+          --sim-bg: #261d3b;
+          --sim-text: #cdb8ff;
+          --shadow: none;
+        }
+      }
+
+      body {
+        margin: 0;
+        background: var(--bg);
+        color: var(--text);
+        font: 1.0625rem/1.55 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+      }
+      main { max-width: 44rem; margin: 0 auto; padding: 1.5rem 1rem 4rem; }
+      main :is(h1, h2, h3) { line-height: 1.25; }
+      main h2 { font-size: 1.35rem; margin: 1.5rem 0 0.75rem; }
+      main .step-label + h2 { margin-top: 0.25rem; }
+      main h3 { font-size: 1.1rem; margin: 1.25rem 0 0.5rem; }
+      :focus-visible { outline: 3px solid var(--focus); outline-offset: 2px; }
+
+      .masthead { padding: 1rem 0 0.5rem; }
+      .masthead h1 {
+        display: flex; align-items: center; gap: 0.6rem;
+        font-size: 2rem; letter-spacing: -0.01em; margin: 0 0 0.5rem;
+      }
+      .masthead h1::before {
+        content: ""; width: 1.6rem; height: 1.6rem; flex: none;
+        background: var(--accent); border-radius: 0.45rem 0.45rem 0.8rem 0.8rem;
+      }
+      .masthead p { color: var(--muted); margin: 0; max-width: 38rem; }
+
+      .card {
+        background: var(--surface); border: 1px solid var(--border); border-radius: 14px;
+        box-shadow: var(--shadow); padding: 1.25rem 1.25rem 1.5rem; margin: 1.25rem 0;
+      }
+      .step-label {
+        margin: 0; color: var(--accent); font-size: 0.8rem; font-weight: 700;
+        letter-spacing: 0.06em; text-transform: uppercase;
+      }
+
+      main label { display: block; margin: 0.75rem 0; font-weight: 500; }
+      main :is(input, textarea) {
+        display: block; width: 100%; box-sizing: border-box; margin-top: 0.3rem;
+        font: inherit; font-weight: 400; color: var(--text); background: var(--surface);
+        padding: 0.55rem 0.7rem; border: 1px solid var(--field); border-radius: 8px;
+      }
+      .fields { display: grid; grid-template-columns: 1fr 1fr; column-gap: 1rem; }
+      .fields .full { grid-column: 1 / -1; }
+      @media (max-width: 34rem) { .fields { grid-template-columns: 1fr; } }
+
+      main fieldset { border: 1px solid var(--border); border-radius: 10px; margin: 1rem 0; padding: 0.5rem 0.75rem 0.75rem; }
+      main legend { font-weight: 600; padding: 0 0.35rem; }
+      main label.choice {
+        display: flex; gap: 0.6rem; align-items: baseline; margin: 0.25rem 0;
+        padding: 0.5rem 0.6rem; border-radius: 8px; font-weight: 400; cursor: pointer;
+      }
+      main label.choice:has(input:checked) { background: var(--accent-soft); }
+      main label.choice input { display: inline; width: auto; margin: 0; accent-color: var(--accent); }
+
+      main button {
+        font: inherit; font-weight: 600; min-height: 44px; padding: 0.55rem 1.25rem;
+        margin-top: 0.5rem; border-radius: 10px; cursor: pointer;
+        background: var(--accent); color: var(--on-accent); border: 2px solid var(--accent);
+      }
+      main button:hover { background: var(--accent-hover); border-color: var(--accent-hover); }
+      main button:disabled { opacity: 0.6; cursor: not-allowed; }
+      main button.secondary { background: transparent; color: var(--accent); }
+      main button.secondary:hover { background: var(--accent-soft); }
+
+      [role="status"]:empty { display: none; }
+      [role="status"] { color: var(--muted); }
+      .working { display: flex; align-items: center; gap: 0.6rem; }
+      .working::before {
+        content: ""; width: 1rem; height: 1rem; flex: none; border-radius: 50%;
+        border: 2px solid var(--border); border-top-color: var(--accent);
+        animation: spin 0.8s linear infinite;
+      }
+      @keyframes spin { to { transform: rotate(360deg); } }
+      @media (prefers-reduced-motion: reduce) { .working::before { animation: none; } }
+
+      .timeline { list-style: none; padding: 0; margin: 0.5rem 0; counter-reset: step; }
+      .timeline li {
+        counter-increment: step; position: relative; padding: 0.3rem 0 0.9rem 2.4rem;
+      }
+      .timeline li::before {
+        content: counter(step); position: absolute; left: 0; top: 0.2rem;
+        width: 1.6rem; height: 1.6rem; border-radius: 50%; display: grid; place-items: center;
+        font-size: 0.85rem; font-weight: 700; background: var(--accent-soft); color: var(--accent);
+      }
+      .timeline li:not(:last-child)::after {
+        content: ""; position: absolute; left: 0.78rem; top: 1.95rem; bottom: 0.1rem;
+        width: 2px; background: var(--border);
+      }
+      .timeline li[data-tool="create_order"]::before { background: var(--accent); color: var(--on-accent); }
+
+      .check-lines { list-style: none; padding: 0; margin: 0.5rem 0; }
+      .check-lines li { border-left: 3px solid var(--border); padding: 0.3rem 0.8rem; margin: 0.4rem 0; }
+      .verdict li:first-child { font-weight: 600; }
+
+      .badge {
+        display: inline-block; margin: 0 0 0.25rem; padding: 0.2rem 0.75rem;
+        border-radius: 999px; font-size: 0.9rem; font-weight: 700;
+      }
+      .badge-low { background: var(--ok-bg); color: var(--ok-text); }
+      .badge-medium { background: var(--warn-bg); color: var(--warn-text); }
+      .badge-high { background: var(--danger-bg); color: var(--danger-text); }
+
+      .callout { padding: 0.75rem 1rem; border-radius: 10px; border-left: 4px solid; }
+      .warning { background: var(--danger-bg); color: var(--danger-text); font-weight: 600; }
+      .simulation { background: var(--sim-bg); color: var(--sim-text); }
+
+      .pay-actions { display: grid; gap: 0.5rem; max-width: 26rem; margin-top: 1rem; }
+
+      .decision { padding: 0.75rem 1rem; border-radius: 10px; background: var(--accent-soft); }
+      .decision-captured { background: var(--ok-bg); color: var(--ok-text); }
+      .decision-cancelled { background: var(--warn-bg); color: var(--warn-text); }
+      .receipt-details { display: grid; grid-template-columns: max-content 1fr; gap: 0.35rem 1rem; }
       .receipt-details dt { font-weight: 600; }
+      .receipt-details dd { margin: 0; }
+      .receipt-details ul { margin: 0; padding-left: 1.1rem; }
+      main blockquote {
+        margin: 0.5rem 0; padding: 0.25rem 0.9rem; border-left: 3px solid var(--accent);
+        color: var(--muted); font-style: italic;
+      }
     </style>
   </head>
   <body>

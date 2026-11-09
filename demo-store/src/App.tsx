@@ -28,12 +28,14 @@ export function App() {
 
   return (
     <main>
-      <h1>Pay Guard</h1>
-      <p>
-        An AI agent shops for you. Before any money moves, the guard holds PayPal's record of the
-        order against what you asked for, and tells you what differs.
-      </p>
-      {error && <p role="alert">{error}</p>}
+      <header className="masthead">
+        <h1>Pay Guard</h1>
+        <p>
+          An AI agent shops for you. Before any money moves, the guard holds PayPal's record of
+          the order against what you asked for, and tells you what differs.
+        </p>
+      </header>
+      {error && <p role="alert" className="callout warning">{error}</p>}
       {outcome ? (
         <ReceiptView orderId={outcome.orderId} onRestart={restart} />
       ) : (

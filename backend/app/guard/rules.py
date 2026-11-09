@@ -1,9 +1,7 @@
-"""Deterministic scam rules. These alone set the risk level.
+"""What the guard's rules share: facts read from PayPal's order, and how hits are scored.
 
 Order text is written by whoever created the order, possibly a scammer, so nothing
-here consults a model and the explainer only ever sees the finished result.
-
-To add a rule, write evaluate(order, context) -> list[RuleHit] and add it to RULES.
+here consults a model. The rules themselves are in mandate_rules.
 """
 
 import re
@@ -18,21 +16,6 @@ MEDIUM = 30
 
 MEDIUM_THRESHOLD = 30
 HIGH_THRESHOLD = 60
-
-# Lookalikes of these brands are scored; a real brand on the allowlist never is.
-KNOWN_BRANDS = (
-    "amazon",
-    "apple",
-    "ebay",
-    "geeksquad",
-    "google",
-    "mcafee",
-    "microsoft",
-    "netflix",
-    "norton",
-    "paypal",
-    "walmart",
-)
 
 # Cyrillic and Greek letters that render like Latin ones, plus digit swaps.
 CONFUSABLES = str.maketrans(
@@ -135,50 +118,10 @@ class OrderFacts:
 
 
 @dataclass(frozen=True)
-class GuardContext:
-    cart_total_cents: int
-    store_currency: str = catalog.CURRENCY
-    allowed_merchant_ids: frozenset[str] = frozenset()
-    large_amount_cents: int = 200_00
-
-
-@dataclass(frozen=True)
 class RiskResult:
     level: str
     score: int
     hits: tuple[RuleHit, ...] = field(default_factory=tuple)
-
-
-def price_mismatch(order: OrderFacts, context: GuardContext) -> list[RuleHit]:
-    if order.total_cents == context.cart_total_cents:
-        return []
-    reason = (
-        f"The total changed from {catalog.to_value(context.cart_total_cents)} "
-        f"to {catalog.to_value(order.total_cents)}."
-    )
-    return [RuleHit("price_mismatch", HIGH, reason)]
-
-
-def hidden_charges(order: OrderFacts, context: GuardContext) -> list[RuleHit]:
-    if order.extra_charge_cents == 0:
-        return []
-    reason = f"{catalog.to_value(order.extra_charge_cents)} in extra charges were added."
-    return [RuleHit("hidden_charges", MEDIUM, reason)]
-
-
-def currency_trick(order: OrderFacts, context: GuardContext) -> list[RuleHit]:
-    if order.currency != context.store_currency:
-        reason = f"The order is in {order.currency}, not {context.store_currency}."
-        return [RuleHit("currency_trick", HIGH, reason)]
-    if order.total_cents >= context.cart_total_cents * 10:
-        return [RuleHit("currency_trick", HIGH, "The total is at least ten times the cart.")]
-    return []
-
-
-def unknown_payee(order: OrderFacts, context: GuardContext) -> list[RuleHit]:
-    if order.payee_merchant_id in context.allowed_merchant_ids:
-        return []
-    return [RuleHit("unknown_payee", MEDIUM, "This payee is not one this store knows.")]
 
 
 def _edit_distance(a: str, b: str) -> int:
@@ -193,61 +136,6 @@ def _edit_distance(a: str, b: str) -> int:
     return previous[-1]
 
 
-def _imitated_brand(token: str) -> str | None:
-    if len(token) < 4:
-        return None
-    cleaned = token.translate(CONFUSABLES)
-    for brand in KNOWN_BRANDS:
-        distance = _edit_distance(cleaned, brand)
-        # An untouched exact match is the brand's own name, not an imitation.
-        # Short brands match on disguised characters only: "apply" is one edit from "apple".
-        if (distance == 0 and token != brand) or (len(brand) > 5 and 0 < distance <= 2):
-            return brand
-    return None
-
-
-def lookalike_name(order: OrderFacts, context: GuardContext) -> list[RuleHit]:
-    if order.payee_merchant_id in context.allowed_merchant_ids:
-        return []
-    for name in order.payee_names:
-        folded = unicodedata.normalize("NFKC", name).casefold()
-        tokens = re.findall(r"\w+", folded)
-        # "pay-pa1" and "pay pa1" only look like the brand once joined up.
-        for token in [*tokens, "".join(tokens)]:
-            brand = _imitated_brand(token)
-            if brand:
-                return [RuleHit("lookalike_name", HIGH, f"The payee name imitates {brand}.")]
-    return []
-
-
-def pressure_words(order: OrderFacts, context: GuardContext) -> list[RuleHit]:
-    text = unicodedata.normalize("NFKC", order.text).casefold()
-    found = [label for label, pattern in PRESSURE_PATTERNS.items() if re.search(pattern, text)]
-    if not found:
-        return []
-    return [RuleHit("pressure_words", MEDIUM, f"The order text mentions {', '.join(found)}.")]
-
-
-def large_amount(order: OrderFacts, context: GuardContext) -> list[RuleHit]:
-    if order.total_cents <= context.large_amount_cents:
-        return []
-    reason = f"The total is over {catalog.to_value(context.large_amount_cents)}."
-    return [RuleHit("large_amount", MEDIUM, reason)]
-
-
-Rule = Callable[[OrderFacts, GuardContext], list[RuleHit]]
-
-RULES: tuple[Rule, ...] = (
-    price_mismatch,
-    hidden_charges,
-    currency_trick,
-    unknown_payee,
-    lookalike_name,
-    pressure_words,
-    large_amount,
-)
-
-
 def result(hits: tuple[RuleHit, ...]) -> RiskResult:
     score = sum(hit.weight for hit in hits)
     if score >= HIGH_THRESHOLD:
@@ -258,6 +146,3 @@ def result(hits: tuple[RuleHit, ...]) -> RiskResult:
         level = "Low"
     return RiskResult(level, score, hits)
 
-
-def assess(order: OrderFacts, context: GuardContext) -> RiskResult:
-    return result(tuple(hit for rule in RULES for hit in rule(order, context)))

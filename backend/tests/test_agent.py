@@ -2,6 +2,7 @@ import json
 from types import SimpleNamespace
 
 import httpx
+import openai
 import pytest
 from fastapi.testclient import TestClient
 
@@ -187,3 +188,79 @@ def test_size_10_is_sold_out_only_in_the_lookalike_scenario():
 
 def test_the_gift_card_is_never_listed_in_search():
     assert all(p["product_id"] != "th-gift-25" for p in Shop("gift_card").search("gift card"))
+
+
+def stream(client, mandate_id, scenario="clean") -> list[dict]:
+    response = client.post("/agent/runs/stream", json={"mandate_id": mandate_id, "scenario": scenario})
+    assert response.status_code == 200
+    assert response.headers["content-type"] == "application/x-ndjson"
+    return [json.loads(line) for line in response.text.splitlines()]
+
+
+def test_the_stream_sends_each_step_then_the_result(tmp_path):
+    model = ScriptedModel(
+        [("search_products", {"query": "running shoes"})],
+        [("view_product", {"product_id": "th-road"})],
+        buy(("th-road", 1)),
+    )
+    client, _ = make_client(tmp_path, model)
+    with client:
+        events = stream(client, confirmed_mandate(client))
+    assert [event["type"] for event in events] == ["step", "step", "step", "done"]
+    assert [event["step"]["tool"] for event in events[:3]] == [
+        "search_products", "view_product", "create_order"
+    ]
+    assert events[-1]["run"]["order"]["total"] == "54.00"
+    assert events[-1]["run"]["steps"] == [event["step"] for event in events[:3]]
+
+
+def test_a_refused_run_is_a_plain_error_not_a_stream(tmp_path):
+    client, _ = make_client(tmp_path, ScriptedModel())
+    with client:
+        draft_id = client.post("/mandates", json={"request": "shoes"}).json()["mandate_id"]
+        response = client.post("/agent/runs/stream", json={"mandate_id": draft_id})
+    assert response.status_code == 409
+
+
+def test_a_model_failure_mid_run_ends_the_stream_with_an_error(tmp_path):
+    class Unreachable:
+        async def _create(self, **_):
+            raise openai.APIConnectionError(request=httpx.Request("POST", "https://api.openai.com"))
+
+        responses = SimpleNamespace()
+
+    model = Unreachable()
+    model.responses.create = model._create
+    client, paypal = make_client(tmp_path, model)
+    with client:
+        events = stream(client, confirmed_mandate(client))
+    assert events == [
+        {"type": "error", "detail": "The agent could not reach its model. Try again."}
+    ]
+    assert paypal.orders == {}
+
+
+def test_the_shop_prices_and_totals_every_order_itself():
+    body, total, store = Shop("clean").order_body(
+        [{"product_id": "th-road", "quantity": 1}, {"product_id": "th-socks", "quantity": 2}], "10"
+    )
+    assert total == 78_00
+    assert body["purchase_units"][0]["amount"] == {
+        "currency_code": "USD",
+        "value": "78.00",
+        "breakdown": {"item_total": {"currency_code": "USD", "value": "78.00"}},
+    }
+    assert store.name == "Trailhead Running Co."
+
+
+@pytest.mark.parametrize(
+    ("line", "error"),
+    [
+        ({"product_id": "nope", "quantity": 1}, "No product nope"),
+        ({"product_id": "th-socks", "quantity": 0}, "Quantity must be"),
+        ({"product_id": "th-socks", "quantity": 6}, "Quantity must be"),
+    ],
+)
+def test_the_shop_refuses_unknown_products_and_quantities(line, error):
+    with pytest.raises(ShopError, match=error):
+        Shop("clean").order_body([line], "10")

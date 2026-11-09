@@ -68,7 +68,8 @@ export function MandateStep({ onConfirmed }: { onConfirmed: (mandate: Mandate) =
 
   if (confirmed) {
     return (
-      <section aria-labelledby="mandate-done">
+      <section className="card done" aria-labelledby="mandate-done">
+        <p className="step-label">Step 1 of 3</p>
         <h2 id="mandate-done" tabIndex={-1} ref={doneHeading}>
           Confirmed. The agent may now shop for:
         </h2>
@@ -83,7 +84,8 @@ export function MandateStep({ onConfirmed }: { onConfirmed: (mandate: Mandate) =
   }
 
   return (
-    <section aria-labelledby="mandate-ask">
+    <section className="card" aria-labelledby="mandate-ask">
+      <p className="step-label">Step 1 of 3</p>
       <h2 id="mandate-ask">What should the agent buy?</h2>
       <form onSubmit={read}>
         <label htmlFor="mandate-request">
@@ -108,15 +110,15 @@ export function MandateStep({ onConfirmed }: { onConfirmed: (mandate: Mandate) =
           <h2 id="mandate-review" tabIndex={-1} ref={reviewHeading}>
             Check what the agent will do
           </h2>
-          <ul aria-label="What the agent understood">
+          <ul aria-label="What the agent understood" className="check-lines">
             {draft.spoken.map((line) => (
               <li key={line}>{line}</li>
             ))}
           </ul>
 
-          <form onSubmit={confirm} aria-labelledby="mandate-review">
-            <p>Correct anything that is wrong, then confirm.</p>
-            <label>
+          <form onSubmit={confirm} aria-labelledby="mandate-review" className="fields">
+            <p className="full">Correct anything that is wrong, then confirm.</p>
+            <label className="full">
               Item
               <input value={fields.item} onChange={(e) => set("item", e.target.value)} required />
             </label>
@@ -128,7 +130,7 @@ export function MandateStep({ onConfirmed }: { onConfirmed: (mandate: Mandate) =
               Size (optional)
               <input value={fields.size ?? ""} onChange={(e) => set("size", e.target.value)} />
             </label>
-            <label>
+            <label className="full">
               Must be, separated by commas (optional)
               <input
                 value={detailsText}
@@ -155,11 +157,11 @@ export function MandateStep({ onConfirmed }: { onConfirmed: (mandate: Mandate) =
                 required
               />
             </label>
-            <label>
+            <label className="full">
               Store (leave blank to allow any store you've paid before)
               <input value={fields.store ?? ""} onChange={(e) => set("store", e.target.value)} />
             </label>
-            <button type="submit" disabled={busy}>
+            <button type="submit" disabled={busy} className="full">
               Confirm and let the agent shop
             </button>
           </form>

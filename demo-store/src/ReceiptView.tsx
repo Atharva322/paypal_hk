@@ -27,11 +27,11 @@ export function ReceiptView({ orderId, onRestart }: { orderId: string; onRestart
 
   const shown = receipt.shown;
   return (
-    <section aria-labelledby="receipt-heading">
+    <section className="card receipt" aria-labelledby="receipt-heading">
       <h2 id="receipt-heading" tabIndex={-1} ref={heading}>
         Consent receipt
       </h2>
-      <p>
+      <p className={`decision decision-${receipt.decision}`}>
         <strong>{DECISIONS[receipt.decision]}</strong>
         {receipt.capture_id && ` PayPal capture ${receipt.capture_id}.`} Order {receipt.order_id},
         recorded {receipt.decided_at} UTC.
@@ -71,7 +71,7 @@ export function ReceiptView({ orderId, onRestart }: { orderId: string; onRestart
             </dd>
           </dl>
           <h3>What you were told before deciding ({shown.risk.level} risk)</h3>
-          <ul>
+          <ul className="check-lines verdict">
             {shown.spoken.map((line) => (
               <li key={line}>{line}</li>
             ))}
@@ -81,7 +81,7 @@ export function ReceiptView({ orderId, onRestart }: { orderId: string; onRestart
         <p>You discarded the order before approving it, so it was never checked in PayPal.</p>
       )}
 
-      <button type="button" onClick={onRestart}>
+      <button type="button" className="secondary" onClick={onRestart}>
         Start a new request
       </button>
     </section>
